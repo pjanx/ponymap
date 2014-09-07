@@ -1,0 +1,8 @@
+# Build files
+/ponymap
+
+# Qt Creator files
+/ponymap.config
+/ponymap.files
+/ponymap.creator*
+/ponymap.includes
