@@ -36,8 +36,13 @@ struct service
 	const char *name;                   ///< Name of the service
 	int flags;                          ///< Service flags
 
+	// XXX: what event happens when?
+
 	/// Initialize a scan, returning a handle to it
 	void *(*scan_init) (struct unit *u);
+
+	/// Destroy the handle created for the scan
+	void (*scan_free) (void *handle);
 
 	/// We have received some data from the peer
 	void (*on_data) (void *handle, struct unit *u, struct str *data);
@@ -48,8 +53,8 @@ struct service
 	/// Network or other error has occured
 	void (*on_error) (void *handle, struct unit *u);
 
-	/// The scan has been cancelled
-	void (*on_cancelled) (void *handle, struct unit *u);
+	/// The scan has been aborted
+	void (*on_aborted) (void *handle, struct unit *u);
 };
 
 struct plugin_api

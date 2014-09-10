@@ -75,6 +75,8 @@ struct target
 	LIST_HEADER (target)
 	size_t ref_count;                   ///< Reference count
 
+	struct app_context *ctx;            ///< Application context
+
 	uint32_t ip;                        ///< IP address
 	char *hostname;                     ///< Hostname
 
@@ -82,33 +84,72 @@ struct target
 	// XXX: what is the relation to `struct unit'?
 };
 
-// XXX: how is this supposed to be working?
+// TODO: actually use this
+enum transport_io_result
+{
+	TRANSPORT_IO_OK,                    ///< Completed successfully
+	TRANSPORT_IO_EOF,                   ///< Connection shut down by peer
+	TRANSPORT_IO_ERROR                  ///< Connection error
+};
+
+// The only real purpose of this is to abstract away TLS/SSL
 struct transport
 {
 	LIST_HEADER (transport)
 
 	const char *name;                   ///< Name of the transport
 
-	ssize_t (*read) (struct unit *u, void *buf, size_t len);
-	ssize_t (*write) (struct unit *u, const void *buf, size_t len);
+	/// Initialize the transport
+	bool (*init) (struct unit *u);
+	/// Destroy the user data pointer
+	void (*cleanup) (struct unit *u);
+
+	/// The underlying socket may have become readable, update `read_buffer';
+	/// return false if the connection has failed.
+	bool (*on_readable) (struct unit *u);
+	/// The underlying socket may have become writeable, flush `write_buffer';
+	/// return false if the connection has failed.
+	bool (*on_writeable) (struct unit *u);
+	/// Return event mask to use for the poller
+	int (*get_poll_events) (struct unit *u);
 };
 
 struct unit
 {
 	struct target *target;              ///< Target context
+
+	struct service *service;            ///< Service
+	void *service_data;                 ///< User data for service
+
 	struct transport *transport;        ///< Transport methods
+	void *transport_data;               ///< User data for transport
 
 	int socket_fd;                      ///< The TCP socket
 	struct str read_buffer;             ///< Unprocessed input
 	struct str write_buffer;            ///< Output yet to be sent out
 
-	SSL *ssl;                           ///< SSL connection
-	bool ssl_rx_want_tx;                ///< SSL_read() wants to write
-	bool ssl_tx_want_rx;                ///< SSL_write() wants to read
-
+	bool aborted;                       ///< Scan has been aborted
 	bool success;                       ///< Service has been found
 	struct str_vector info;             ///< Info resulting from the scan
 };
+
+static void
+unit_init (struct unit *self)
+{
+	memset (self, 0, sizeof *self);
+
+	str_init (&self->read_buffer);
+	str_init (&self->write_buffer);
+	str_vector_init (&self->info);
+}
+
+static void
+unit_free (struct unit *self)
+{
+	str_free (&self->read_buffer);
+	str_free (&self->write_buffer);
+	str_vector_free (&self->info);
+}
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -138,6 +179,8 @@ struct app_context
 	struct str_map services;            ///< All registered services
 	struct transport *transports;       ///< All available transports
 	struct job_generator generator;     ///< Job generator
+
+	SSL_CTX *ssl_ctx;                   ///< OpenSSL context
 #if 0
 	struct target *running_list;        ///< List of currently scanned targets
 #endif
@@ -149,16 +192,14 @@ struct app_context
 static void
 app_context_init (struct app_context *self)
 {
+	memset (self, 0, sizeof *self);
+
 	str_map_init (&self->config);
 	self->config.free = free;
 	load_config_defaults (&self->config, g_config_table);
 
 	str_map_init (&self->svc_list);
-	self->port_list = NULL;
-	self->ip_list = NULL;
-
 	str_map_init (&self->services);
-	self->transports = NULL;
 	// Ignoring the generator so far
 
 	poller_init (&self->poller);
@@ -186,7 +227,12 @@ app_context_free (struct app_context *self)
 		port_range_delete (iter);
 		iter = next;
 	}
+
+	if (self->ssl_ctx)
+		SSL_CTX_free (self->ssl_ctx);
 }
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static void
 try_finish_quit (struct app_context *ctx)
@@ -200,6 +246,49 @@ initiate_quit (struct app_context *ctx)
 {
 	ctx->quitting = true;
 	try_finish_quit (ctx);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static void on_unit_ready (const struct pollfd *pfd, struct unit *u);
+
+static void
+unit_update_poller (struct unit *u, const struct pollfd *pfd)
+{
+	int new_events = u->transport->get_poll_events (u);
+	hard_assert (new_events != 0);
+
+	if (!pfd || pfd->events != new_events)
+		poller_set (&u->target->ctx->poller, u->socket_fd, new_events,
+			(poller_dispatcher_func) on_unit_ready, u);
+}
+
+static void
+on_unit_ready (const struct pollfd *pfd, struct unit *u)
+{
+	struct transport *transport = u->transport;
+	struct service *service = u->service;
+
+	if (!transport->on_readable (u))
+		; // TODO: cancel the unit
+	if (u->read_buffer.len)
+	{
+		struct str *buf = &u->read_buffer;
+		service->on_data (u->service_data, u, buf);
+		str_remove_slice (buf, 0, buf->len);
+	}
+
+	// TODO: check if the unit has been aborted?
+	if (!transport->on_writeable (u))
+		; // TODO: cancel the unit
+
+	unit_update_poller (u, pfd);
+	return;
+
+abort:
+	// TODO: move to a function, guard against `aborted' in the API
+	u->aborted = true;
+	service->on_aborted (u->service_data, u);
 }
 
 // --- Signals -----------------------------------------------------------------
@@ -264,7 +353,11 @@ plugin_api_register_service (void *app_context, struct service *info)
 static ssize_t
 plugin_api_unit_write (struct unit *u, const void *buf, size_t len)
 {
-	// TODO
+	if (u->aborted)
+		return -1;
+
+	str_append_data (&u->write_buffer, buf, len);
+	return len;
 }
 
 static void
@@ -368,39 +461,257 @@ load_plugins (struct app_context *ctx)
 	return success;
 }
 
-// --- Transports --------------------------------------------------------------
+// --- Plain transport ---------------------------------------------------------
 
-static ssize_t
-transport_plain_read (struct unit *c, void *buf, size_t len)
+static bool
+transport_plain_init (struct unit *u)
 {
+	(void) u;
+	return true;
 }
 
-static ssize_t
-transport_plain_write (struct unit *c, const void *buf, size_t len)
+static void
+transport_plain_cleanup (struct unit *u)
 {
+	(void) u;
+}
+
+static bool
+transport_plain_on_readable (struct unit *u)
+{
+	struct str *buf = &u->read_buffer;
+	ssize_t n_read;
+
+	while (true)
+	{
+		str_ensure_space (buf, 512);
+		n_read = recv (u->socket_fd, buf->str + buf->len,
+			buf->alloc - buf->len - 1 /* null byte */, 0);
+
+		if (n_read > 0)
+		{
+			buf->str[buf->len += n_read] = '\0';
+			continue;
+		}
+		if (n_read == 0)
+			// TODO: service->on_eof()
+			return false;
+
+		if (errno == EAGAIN)
+			return true;
+		if (errno == EINTR)
+			continue;
+
+		// TODO: service->on_error()
+		print_debug ("%s: %s: %s", __func__, "recv", strerror (errno));
+		return false;
+	}
+}
+
+static bool
+transport_plain_on_writeable (struct unit *u)
+{
+	struct str *buf = &u->write_buffer;
+	ssize_t n_written;
+
+	while (buf->len)
+	{
+		n_written = send (u->socket_fd, buf->str, buf->len, 0);
+		if (n_written >= 0)
+		{
+			str_remove_slice (buf, 0, n_written);
+			continue;
+		}
+
+		if (errno == EAGAIN)
+			return true;
+		if (errno == EINTR)
+			continue;
+
+		// TODO: service->on_error()
+		print_debug ("%s: %s: %s", __func__, "send", strerror (errno));
+		return false;
+	}
+	return true;
+}
+
+static int
+transport_plain_get_poll_events (struct unit *u)
+{
+	int events = POLLIN;
+	if (u->write_buffer.len)
+		events |= POLLOUT;
+	return events;
 }
 
 static struct transport g_transport_plain =
 {
-	.read = transport_plain_read,
-	.write = transport_plain_write
+	.name             = "plain",
+	.init             = transport_plain_init,
+	.cleanup          = transport_plain_cleanup,
+	.on_readable      = transport_plain_on_readable,
+	.on_writeable     = transport_plain_on_writeable,
+	.get_poll_events  = transport_plain_get_poll_events,
 };
 
-static ssize_t
-transport_tls_read (struct unit *c, void *buf, size_t len)
+// --- SSL/TLS transport -------------------------------------------------------
+
+struct transport_tls_data
 {
+	SSL *ssl;                           ///< SSL/TLS connection
+	bool ssl_rx_want_tx;                ///< SSL_read() wants to write
+	bool ssl_tx_want_rx;                ///< SSL_write() wants to read
+};
+
+static bool
+transport_tls_init (struct unit *u)
+{
+	SSL *ssl = SSL_new (u->target->ctx->ssl_ctx);
+	if (!ssl || !SSL_set_fd (ssl, u->socket_fd))
+	{
+		const char *error_info = ERR_error_string (ERR_get_error (), NULL);
+		print_debug ("%s: %s",
+			"could not initialize SSL/TLS connection", error_info);
+		SSL_free (ssl);
+		return false;
+	}
+	SSL_set_connect_state (ssl);
+
+	struct transport_tls_data *data = xcalloc (1, sizeof *data);
+	data->ssl = ssl;
+	u->transport_data = data;
+	return true;
 }
 
-static ssize_t
-transport_tls_write (struct unit *c, const void *buf, size_t len)
+static void
+transport_tls_cleanup (struct unit *u)
 {
+	struct transport_tls_data *data = u->transport_data;
+	SSL_free (data->ssl);
+	free (data);
+}
+
+static bool
+transport_tls_on_readable (struct unit *u)
+{
+	struct transport_tls_data *data = u->transport_data;
+	if (data->ssl_tx_want_rx)
+		return true;
+
+	struct str *buf = &u->read_buffer;
+	data->ssl_rx_want_tx = false;
+	while (true)
+	{
+		str_ensure_space (buf, 4096);
+		int n_read = SSL_read (data->ssl, buf->str + buf->len,
+			buf->alloc - buf->len - 1 /* null byte */);
+
+		const char *error_info = NULL;
+		switch (xssl_get_error (data->ssl, n_read, &error_info))
+		{
+		case SSL_ERROR_NONE:
+			buf->str[buf->len += n_read] = '\0';
+			continue;
+		case SSL_ERROR_ZERO_RETURN:
+			// TODO: service->on_eof()
+			return false;
+		case SSL_ERROR_WANT_READ:
+			return true;
+		case SSL_ERROR_WANT_WRITE:
+			data->ssl_rx_want_tx = true;
+			return true;
+		case XSSL_ERROR_TRY_AGAIN:
+			continue;
+		default:
+			print_debug ("%s: %s: %s", __func__, "SSL_read", error_info);
+			// TODO: service->on_error()
+			return false;
+		}
+	}
+}
+
+static bool
+transport_tls_on_writeable (struct unit *u)
+{
+	struct transport_tls_data *data = u->transport_data;
+	if (data->ssl_rx_want_tx)
+		return true;
+
+	struct str *buf = &u->write_buffer;
+	data->ssl_tx_want_rx = false;
+	while (buf->len)
+	{
+		int n_written = SSL_write (data->ssl, buf->str, buf->len);
+
+		const char *error_info = NULL;
+		switch (xssl_get_error (data->ssl, n_written, &error_info))
+		{
+		case SSL_ERROR_NONE:
+			str_remove_slice (buf, 0, n_written);
+			continue;
+		case SSL_ERROR_ZERO_RETURN:
+			// TODO: service->on_eof()
+			return false;
+		case SSL_ERROR_WANT_WRITE:
+			return true;
+		case SSL_ERROR_WANT_READ:
+			data->ssl_tx_want_rx = true;
+			return true;
+		case XSSL_ERROR_TRY_AGAIN:
+			continue;
+		default:
+			print_debug ("%s: %s: %s", __func__, "SSL_write", error_info);
+			// TODO: service->on_error()
+			return false;
+		}
+	}
+	return true;
+}
+
+static int
+transport_tls_get_poll_events (struct unit *u)
+{
+	struct transport_tls_data *data = u->transport_data;
+
+	int events = POLLIN;
+	if (u->write_buffer.len || data->ssl_rx_want_tx)
+		events |= POLLOUT;
+
+	// While we're waiting for an opposite event, we ignore the original
+	if (data->ssl_rx_want_tx)  events &= ~POLLIN;
+	if (data->ssl_tx_want_rx)  events &= ~POLLOUT;
+	return events;
 }
 
 static struct transport g_transport_tls =
 {
-	.read = transport_tls_read,
-	.write = transport_tls_write
+	.name             = "SSL/TLS",
+	.init             = transport_tls_init,
+	.cleanup          = transport_tls_cleanup,
+	.on_readable      = transport_tls_on_readable,
+	.on_writeable     = transport_tls_on_writeable,
+	.get_poll_events  = transport_tls_get_poll_events,
 };
+
+static void
+initialize_tls (struct app_context *ctx)
+{
+	SSL_CTX *ssl_ctx = SSL_CTX_new (SSLv23_client_method ());
+	if (!ctx)
+	{
+		const char *error_info = ERR_error_string (ERR_get_error (), NULL);
+		print_error ("%s: %s", "could not initialize SSL/TLS", error_info);
+		return;
+	}
+
+	// Fuck off, we're just scanning
+	SSL_CTX_set_verify (ctx->ssl_ctx, SSL_VERIFY_NONE, NULL);
+	SSL_CTX_set_mode (ctx->ssl_ctx,
+		SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+
+	ctx->ssl_ctx = ssl_ctx;
+	LIST_PREPEND (ctx->transports, &g_transport_tls);
+}
 
 // --- Scanning ----------------------------------------------------------------
 
@@ -449,15 +760,35 @@ job_generator_init (struct app_context *ctx)
 }
 
 static bool
-job_generator_run (struct app_context *ctx,
-	uint32_t ip, uint16_t port, struct service *svc, struct transport *trans)
+job_generator_run (struct app_context *ctx, uint32_t ip, uint16_t port,
+	struct service *service, struct transport *transport)
 {
-	struct job_generator *g = &ctx->generator;
+	int sockfd = socket (AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	set_blocking (sockfd, false);
 
-	// TODO: create a socket
-	// TODO: set it non-blocking
-	// TODO: connect()
-	// TODO: set a timer
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_addr.s_addr = htonl (ip);
+	addr.sin_port = htons (port);
+
+	if (connect (sockfd, (struct sockaddr *) &addr, sizeof addr))
+		return false;
+
+	struct unit *u = xcalloc (1, sizeof *u);
+	// TODO: set a timer for timeout
+
+	// Initialize the service
+	u->service = service;
+	u->service_data = service->scan_init (u);
+
+	// Initialize the transport
+	u->transport = transport;
+	if (!transport->init (u))
+		// TODO: cleanup
+		return false;
+
+	unit_update_poller (u, NULL);
+	return true;
 }
 
 static bool
@@ -834,8 +1165,8 @@ main (int argc, char *argv[])
 	if (!load_plugins (&ctx))
 		exit (EXIT_FAILURE);
 
-	LIST_PREPEND (ctx.transports, g_transport_plain);
-	LIST_PREPEND (ctx.transports, g_transport_tls);
+	LIST_PREPEND (ctx.transports, &g_transport_plain);
+	initialize_tls (&ctx);
 
 	if (!ctx.port_list)
 	{
