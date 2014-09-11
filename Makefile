@@ -9,13 +9,15 @@ LDFLAGS = `pkg-config --libs libssl` -lpthread -lrt -ldl
 .PHONY: all clean
 .SUFFIXES:
 
-targets = ponymap
+targets = ponymap plugins/http.so plugins/irc.so
 
 all: $(targets)
 
 clean:
 	rm -f $(targets)
 
-ponymap: ponymap.c utils.c siphash.c
+ponymap: ponymap.c utils.c plugin-api.h siphash.c
 	$(CC) ponymap.c siphash.c -o $@ $(CFLAGS) $(LDFLAGS)
 
+plugins/%.so: plugins/%.c utils.c plugin-api.h
+	$(CC) $< -o $@ $(CFLAGS) $(LDFLAGS) -shared -fPIC

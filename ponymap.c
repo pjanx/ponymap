@@ -18,9 +18,6 @@
  *
  */
 
-#define PROGRAM_NAME "ponymap"
-#define PROGRAM_VERSION "alpha"
-
 #include "utils.c"
 #include "plugin-api.h"
 #include <dirent.h>

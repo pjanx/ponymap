@@ -18,6 +18,9 @@
  *
  */
 
+#define PROGRAM_NAME "ponymap"
+#define PROGRAM_VERSION "alpha"
+
 #define _POSIX_C_SOURCE 199309L
 #define _XOPEN_SOURCE 600
 

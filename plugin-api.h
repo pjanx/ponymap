@@ -36,7 +36,7 @@ struct service
 	const char *name;                   ///< Name of the service
 	int flags;                          ///< Service flags
 
-	// XXX: what event happens when?
+	// scan_init -> on_data* -> [on_eof/on_error] -> on_aborted -> scan_free
 
 	/// Initialize a scan, returning a handle to it
 	void *(*scan_init) (struct unit *u);

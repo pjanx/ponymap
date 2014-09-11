@@ -1,5 +1,5 @@
 /*
- * plugin-http.c: IRC service detection plugin
+ * http.c: IRC service detection plugin
  *
  * Copyright (c) 2014, Přemysl Janouch <p.janouch@gmail.com>
  * All rights reserved.
@@ -18,10 +18,8 @@
  *
  */
 
-#include "utils.c"
-#include "plugin-api.h"
-
-// TODO
+#include "../utils.c"
+#include "../plugin-api.h"
 
 // --- IRC utilities -----------------------------------------------------------
 
@@ -192,3 +190,26 @@ irc_fnmatch (const char *pattern, const char *string)
 	irc_strxfrm (x_string,  string,  string_size);
 	return fnmatch (x_pattern, x_string, 0);
 }
+
+// --- Service detection -------------------------------------------------------
+
+static struct plugin_data
+{
+	void *ctx;                          ///< Application context
+	struct plugin_api *api;             ///< Plugin API vtable
+}
+g_data;
+
+static bool
+initialize (void *ctx, struct plugin_api *api)
+{
+	g_data = (struct plugin_data) { .ctx = ctx, .api = api };
+	// TODO: register a service
+	return true;
+}
+
+struct plugin_info ponymap_plugin_info =
+{
+	.api_version  = API_VERSION,
+	.initialize   = initialize
+};
