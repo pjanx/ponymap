@@ -25,8 +25,12 @@
 
 // --- Configuration (application-specific) ------------------------------------
 
+#define DEFAULT_CONNECT_TIMEOUT  10
+#define DEFAULT_SCAN_TIMEOUT     10
+
 static struct config_item g_config_table[] =
 {
+	// TODO: set the default to the installation directory
 	{ "plugin_dir",      NULL,              "Where to search for plugins"    },
 	{ NULL,              NULL,              NULL                             }
 };
@@ -71,20 +75,18 @@ struct target
 {
 	LIST_HEADER (target)
 	size_t ref_count;                   ///< Reference count
-
 	struct app_context *ctx;            ///< Application context
 
 	uint32_t ip;                        ///< IP address
 	char *hostname;                     ///< Hostname
 
+	struct unit *running_units;         ///< All the currently running units
 	// TODO: some fields with results
-	// XXX: what is the relation to `struct unit'?
 };
 
-// TODO: actually use this
 enum transport_io_result
 {
-	TRANSPORT_IO_OK,                    ///< Completed successfully
+	TRANSPORT_IO_OK = 0,                ///< Completed successfully
 	TRANSPORT_IO_EOF,                   ///< Connection shut down by peer
 	TRANSPORT_IO_ERROR                  ///< Connection error
 };
@@ -103,16 +105,17 @@ struct transport
 
 	/// The underlying socket may have become readable, update `read_buffer';
 	/// return false if the connection has failed.
-	bool (*on_readable) (struct unit *u);
+	enum transport_io_result (*on_readable) (struct unit *u);
 	/// The underlying socket may have become writeable, flush `write_buffer';
 	/// return false if the connection has failed.
-	bool (*on_writeable) (struct unit *u);
+	enum transport_io_result (*on_writeable) (struct unit *u);
 	/// Return event mask to use for the poller
 	int (*get_poll_events) (struct unit *u);
 };
 
 struct unit
 {
+	LIST_HEADER (unit)
 	struct target *target;              ///< Target context
 
 	struct service *service;            ///< Service
@@ -168,6 +171,8 @@ struct job_generator
 struct app_context
 {
 	struct str_map config;              ///< User configuration
+	unsigned connect_timeout;           ///< Hard timeout for connect()
+	unsigned scan_timeout;              ///< Hard timeout for service scans
 
 	struct str_map svc_list;            ///< List of services to scan for
 	struct port_range *port_list;       ///< List of ports to scan on
@@ -179,7 +184,7 @@ struct app_context
 
 	SSL_CTX *ssl_ctx;                   ///< OpenSSL context
 #if 0
-	struct target *running_list;        ///< List of currently scanned targets
+	struct target *running_targets;     ///< List of currently scanned targets
 #endif
 	struct poller poller;               ///< Manages polled descriptors
 	bool quitting;                      ///< User requested quitting
@@ -194,6 +199,9 @@ app_context_init (struct app_context *self)
 	str_map_init (&self->config);
 	self->config.free = free;
 	load_config_defaults (&self->config, g_config_table);
+
+	self->connect_timeout = DEFAULT_CONNECT_TIMEOUT;
+	self->scan_timeout = DEFAULT_SCAN_TIMEOUT;
 
 	str_map_init (&self->svc_list);
 	str_map_init (&self->services);
@@ -231,22 +239,7 @@ app_context_free (struct app_context *self)
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-static void
-try_finish_quit (struct app_context *ctx)
-{
-	if (ctx->quitting)
-		ctx->polling = false;
-}
-
-static void
-initiate_quit (struct app_context *ctx)
-{
-	ctx->quitting = true;
-	try_finish_quit (ctx);
-}
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
+static void target_unref (struct target *self);
 static void on_unit_ready (const struct pollfd *pfd, struct unit *u);
 
 static void
@@ -261,31 +254,76 @@ unit_update_poller (struct unit *u, const struct pollfd *pfd)
 }
 
 static void
+unit_abort (struct unit *u)
+{
+	if (u->aborted)
+		return;
+
+	u->aborted = true;
+	u->service->on_aborted (u->service_data, u);
+}
+
+static void
+unit_destroy (struct unit *u)
+{
+	LIST_UNLINK (u->target->running_units, u);
+	target_unref (u->target);
+
+	// TODO: transfer the results?
+	free (u);
+}
+
+static void
 on_unit_ready (const struct pollfd *pfd, struct unit *u)
 {
 	struct transport *transport = u->transport;
 	struct service *service = u->service;
+	enum transport_io_result result;
 
-	if (!transport->on_readable (u))
-		; // TODO: cancel the unit
+	if ((result = transport->on_readable (u)))
+		goto exception;
 	if (u->read_buffer.len)
 	{
 		struct str *buf = &u->read_buffer;
 		service->on_data (u->service_data, u, buf);
 		str_remove_slice (buf, 0, buf->len);
+
+		if (u->aborted)
+			return;
 	}
 
-	// TODO: check if the unit has been aborted?
-	if (!transport->on_writeable (u))
-		; // TODO: cancel the unit
+	if (!(result = transport->on_writeable (u)))
+	{
+		if (!u->aborted)
+			unit_update_poller (u, pfd);
+		return;
+	}
 
-	unit_update_poller (u, pfd);
-	return;
+exception:
+	if (result == TRANSPORT_IO_EOF)
+		service->on_eof (u->service_data, u);
+	else if (result == TRANSPORT_IO_ERROR)
+		service->on_error (u->service_data, u);
 
-abort:
-	// TODO: move to a function, guard against `aborted' in the API
-	u->aborted = true;
-	service->on_aborted (u->service_data, u);
+	unit_abort (u);
+	unit_destroy (u);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static void
+try_finish_quit (struct app_context *ctx)
+{
+	if (ctx->quitting)
+		ctx->polling = false;
+}
+
+static void
+initiate_quit (struct app_context *ctx)
+{
+	ctx->quitting = true;
+	// TODO: abort and kill all units
+	try_finish_quit (ctx);
 }
 
 // --- Signals -----------------------------------------------------------------
@@ -372,7 +410,7 @@ plugin_api_unit_add_info (struct unit *u, const char *result)
 static void
 plugin_api_unit_abort (struct unit *u)
 {
-	// TODO
+	unit_abort (u);
 }
 
 static struct plugin_api g_plugin_vtable =
@@ -473,7 +511,7 @@ transport_plain_cleanup (struct unit *u)
 	(void) u;
 }
 
-static bool
+static enum transport_io_result
 transport_plain_on_readable (struct unit *u)
 {
 	struct str *buf = &u->read_buffer;
@@ -491,21 +529,19 @@ transport_plain_on_readable (struct unit *u)
 			continue;
 		}
 		if (n_read == 0)
-			// TODO: service->on_eof()
-			return false;
+			return TRANSPORT_IO_EOF;
 
 		if (errno == EAGAIN)
-			return true;
+			return TRANSPORT_IO_OK;
 		if (errno == EINTR)
 			continue;
 
-		// TODO: service->on_error()
 		print_debug ("%s: %s: %s", __func__, "recv", strerror (errno));
-		return false;
+		return TRANSPORT_IO_ERROR;
 	}
 }
 
-static bool
+static enum transport_io_result
 transport_plain_on_writeable (struct unit *u)
 {
 	struct str *buf = &u->write_buffer;
@@ -521,15 +557,14 @@ transport_plain_on_writeable (struct unit *u)
 		}
 
 		if (errno == EAGAIN)
-			return true;
+			return TRANSPORT_IO_OK;
 		if (errno == EINTR)
 			continue;
 
-		// TODO: service->on_error()
 		print_debug ("%s: %s: %s", __func__, "send", strerror (errno));
-		return false;
+		return TRANSPORT_IO_ERROR;
 	}
-	return true;
+	return TRANSPORT_IO_OK;
 }
 
 static int
@@ -588,12 +623,12 @@ transport_tls_cleanup (struct unit *u)
 	free (data);
 }
 
-static bool
+static enum transport_io_result
 transport_tls_on_readable (struct unit *u)
 {
 	struct transport_tls_data *data = u->transport_data;
 	if (data->ssl_tx_want_rx)
-		return true;
+		return TRANSPORT_IO_OK;
 
 	struct str *buf = &u->read_buffer;
 	data->ssl_rx_want_tx = false;
@@ -610,8 +645,7 @@ transport_tls_on_readable (struct unit *u)
 			buf->str[buf->len += n_read] = '\0';
 			continue;
 		case SSL_ERROR_ZERO_RETURN:
-			// TODO: service->on_eof()
-			return false;
+			return TRANSPORT_IO_EOF;
 		case SSL_ERROR_WANT_READ:
 			return true;
 		case SSL_ERROR_WANT_WRITE:
@@ -621,18 +655,17 @@ transport_tls_on_readable (struct unit *u)
 			continue;
 		default:
 			print_debug ("%s: %s: %s", __func__, "SSL_read", error_info);
-			// TODO: service->on_error()
-			return false;
+			return TRANSPORT_IO_ERROR;
 		}
 	}
 }
 
-static bool
+static enum transport_io_result
 transport_tls_on_writeable (struct unit *u)
 {
 	struct transport_tls_data *data = u->transport_data;
 	if (data->ssl_rx_want_tx)
-		return true;
+		return TRANSPORT_IO_OK;
 
 	struct str *buf = &u->write_buffer;
 	data->ssl_tx_want_rx = false;
@@ -647,22 +680,20 @@ transport_tls_on_writeable (struct unit *u)
 			str_remove_slice (buf, 0, n_written);
 			continue;
 		case SSL_ERROR_ZERO_RETURN:
-			// TODO: service->on_eof()
-			return false;
+			return TRANSPORT_IO_EOF;
 		case SSL_ERROR_WANT_WRITE:
-			return true;
+			return TRANSPORT_IO_OK;
 		case SSL_ERROR_WANT_READ:
 			data->ssl_tx_want_rx = true;
-			return true;
+			return TRANSPORT_IO_OK;
 		case XSSL_ERROR_TRY_AGAIN:
 			continue;
 		default:
 			print_debug ("%s: %s: %s", __func__, "SSL_write", error_info);
-			// TODO: service->on_error()
-			return false;
+			return TRANSPORT_IO_ERROR;
 		}
 	}
-	return true;
+	return TRANSPORT_IO_OK;
 }
 
 static int
@@ -718,6 +749,9 @@ target_unref (struct target *self)
 	if (!self || --self->ref_count)
 		return;
 
+	// TODO: present the results; if we've been interrupted by the user,
+	//   say that they're only partial
+
 	free (self->hostname);
 	free (self);
 }
@@ -756,6 +790,15 @@ job_generator_init (struct app_context *ctx)
 	g->transport_iter = ctx->transports;
 }
 
+static void
+on_unit_connected (const struct pollfd *pfd, struct unit *u)
+{
+	// TODO: we haven't received the connect event
+	//   -> reset the connect timer
+	//   -> set the scan timer
+	unit_update_poller (u, NULL);
+}
+
 static bool
 job_generator_run (struct app_context *ctx, uint32_t ip, uint16_t port,
 	struct service *service, struct transport *transport)
@@ -768,11 +811,16 @@ job_generator_run (struct app_context *ctx, uint32_t ip, uint16_t port,
 	addr.sin_addr.s_addr = htonl (ip);
 	addr.sin_port = htons (port);
 
-	if (connect (sockfd, (struct sockaddr *) &addr, sizeof addr))
+	bool established;
+	if (!connect (sockfd, (struct sockaddr *) &addr, sizeof addr))
+		established = true;
+	else if (errno == EINPROGRESS)
+		established = false;
+	else
 		return false;
 
 	struct unit *u = xcalloc (1, sizeof *u);
-	// TODO: set a timer for timeout
+	// TODO: set a timer for timeout: established ? scan : connect
 
 	// Initialize the service
 	u->service = service;
@@ -781,10 +829,18 @@ job_generator_run (struct app_context *ctx, uint32_t ip, uint16_t port,
 	// Initialize the transport
 	u->transport = transport;
 	if (!transport->init (u))
-		// TODO: cleanup
+	{
+		xclose (sockfd);
+		service->scan_free (u->service_data);
+		free (u);
 		return false;
+	}
 
-	unit_update_poller (u, NULL);
+	if (established)
+		unit_update_poller (u, NULL);
+	else
+		poller_set (&u->target->ctx->poller, u->socket_fd, POLLOUT,
+			(poller_dispatcher_func) on_unit_connected, u);
 	return true;
 }
 
@@ -849,6 +905,154 @@ job_generator_step (struct app_context *ctx)
 
 	// No more jobs to be created
 	return false;
+}
+
+// --- Option handler ----------------------------------------------------------
+
+// Simple wrapper for the getopt_long API to make it easier to use and maintain.
+
+#define OPT_USAGE_ALIGNMENT_COLUMN 30   ///< Alignment for option descriptions
+
+enum
+{
+	OPT_OPTIONAL_ARG  = (1 << 0),       ///< The argument is optional
+	OPT_LONG_ONLY     = (1 << 1)        ///< Ignore the short name in opt_string
+};
+
+// All options need to have both a short name, and a long name.  The short name
+// is what is returned from opt_handler_get().  It is possible to define a value
+// completely out of the character range combined with the OPT_LONG_ONLY flag.
+//
+// When `arg_hint' is defined, the option is assumed to have an argument.
+
+struct opt
+{
+	int short_name;                     ///< The single-letter name
+	const char *long_name;              ///< The long name
+	const char *arg_hint;               ///< Option argument hint
+	int flags;                          ///< Option flags
+	const char *description;            ///< Option description
+};
+
+struct opt_handler
+{
+	int argc;                           ///< The number of program arguments
+	char **argv;                        ///< Program arguments
+
+	const char *arg_hint;               ///< Program arguments hint
+	const char *description;            ///< Description of the program
+
+	const struct opt *opts;             ///< The list of options
+	size_t opts_len;                    ///< The length of the option array
+
+	struct option *options;             ///< The list of options for getopt
+	char *opt_string;                   ///< The `optstring' for getopt
+};
+
+static void
+opt_handler_free (struct opt_handler *self)
+{
+	free (self->options);
+	free (self->opt_string);
+}
+
+static void
+opt_handler_init (struct opt_handler *self, int argc, char **argv,
+	const struct opt *opts, const char *arg_hint, const char *description)
+{
+	memset (self, 0, sizeof *self);
+	self->argc = argc;
+	self->argv = argv;
+	self->arg_hint = arg_hint;
+	self->description = description;
+
+	size_t len = 0;
+	for (const struct opt *iter = opts; iter->long_name; iter++)
+		len++;
+
+	self->opts = opts;
+	self->opts_len = len;
+	self->options = xcalloc (len + 1, sizeof *self->options);
+
+	struct str opt_string;
+	str_init (&opt_string);
+
+	for (size_t i = 0; i < len; i++)
+	{
+		const struct opt *opt = opts + i;
+		struct option *mapped = self->options + i;
+
+		mapped->name = opt->long_name;
+		if (!opt->arg_hint)
+			mapped->has_arg = no_argument;
+		else if (opt->flags & OPT_OPTIONAL_ARG)
+			mapped->has_arg = optional_argument;
+		else
+			mapped->has_arg = required_argument;
+		mapped->val = opt->short_name;
+
+		if (opt->flags & OPT_LONG_ONLY)
+			continue;
+
+		str_append_c (&opt_string, opt->short_name);
+		if (opt->arg_hint)
+		{
+			str_append_c (&opt_string, ':');
+			if (opt->flags & OPT_OPTIONAL_ARG)
+				str_append_c (&opt_string, ':');
+		}
+	}
+
+	self->opt_string = str_steal (&opt_string);
+}
+
+static void
+opt_handler_usage (struct opt_handler *self)
+{
+	struct str usage;
+	str_init (&usage);
+
+	str_append_printf (&usage, "Usage: %s [OPTION]... %s\n",
+		self->argv[0], self->arg_hint ? self->arg_hint : "");
+	str_append_printf (&usage, "%s\n\n", self->description);
+
+	for (size_t i = 0; i < self->opts_len; i++)
+	{
+		struct str row;
+		str_init (&row);
+
+		const struct opt *opt = self->opts + i;
+		if (!(opt->flags & OPT_LONG_ONLY))
+			str_append_printf (&row, "  -%c, ", opt->short_name);
+		else
+			str_append (&row, "      ");
+		str_append_printf (&row, "--%s", opt->long_name);
+		if (opt->arg_hint)
+			str_append_printf (&row, (opt->flags & OPT_OPTIONAL_ARG)
+				? " [%s]" : " %s", opt->arg_hint);
+
+		if (row.len + 2 <= OPT_USAGE_ALIGNMENT_COLUMN)
+		{
+			str_append (&row, "  ");
+			str_append_printf (&usage, "%-*s%s\n",
+				OPT_USAGE_ALIGNMENT_COLUMN, row.str, opt->description);
+		}
+		else
+			str_append_printf (&usage, "%s\n%-*s%s\n", row.str,
+				OPT_USAGE_ALIGNMENT_COLUMN, "", opt->description);
+
+		str_free (&row);
+	}
+
+	fputs (usage.str, stderr);
+	str_free (&usage);
+}
+
+static int
+opt_handler_get (struct opt_handler *self)
+{
+	return getopt_long (self->argc, self->argv,
+		self->opt_string, self->options, NULL);
 }
 
 // --- Main program ------------------------------------------------------------
@@ -1043,85 +1247,82 @@ on_signal_pipe_readable (const struct pollfd *fd, struct app_context *ctx)
 	(void) read (fd->fd, &dummy, 1);
 
 	if (g_termination_requested && !ctx->quitting)
-	{
 		initiate_quit (ctx);
-	}
 }
 
 static void
-print_usage (const char *program_name)
+parse_program_arguments (struct app_context *ctx, int argc, char **argv)
 {
-	fprintf (stderr,
-		"Usage: %s [OPTION]... { ADDRESS [/MASK] }...\n"
-		"Experimental network scanner.\n"
-		"\n"
-		"  -d, --debug     run in debug mode\n"
-		"  -h, --help      display this help and exit\n"
-		"  -V, --version   output version information and exit\n"
-		"  -p, --port PORTS\n"
-		"                  ports/port ranges, separated by commas\n"
-		"  -s, --service SERVICES\n"
-		"                  services to scan for\n"
-		"  --write-default-cfg [FILENAME]\n"
-		"                  write a default configuration file and exit\n",
-		program_name);
-}
-
-int
-main (int argc, char *argv[])
-{
-	const char *invocation_name = argv[0];
-
-	struct app_context ctx;
-	app_context_init (&ctx);
-
-	// TODO: timeout for connect()
-	// TODO: timeout for fingerprint/whatever
-	static struct option opts[] =
+	static const struct opt opts[] =
 	{
-		{ "debug",             no_argument,       NULL, 'd' },
-		{ "help",              no_argument,       NULL, 'h' },
-		{ "version",           no_argument,       NULL, 'V' },
-		{ "port",              required_argument, NULL, 'p' },
-		{ "service",           required_argument, NULL, 's' },
-		{ "write-default-cfg", optional_argument, NULL, 'w' },
-		{ NULL,                0,                 NULL,  0  }
+		{ 'd', "debug", NULL, 0, "run in debug mode" },
+		{ 'h', "help", NULL, 0, "display this help and exit" },
+		{ 'V', "version", NULL, 0, "output version information and exit" },
+		{ 'p', "ports", "PORTS", 0,
+		  "ports/port ranges, separated by commas" },
+		{ 's', "service", "SERVICES", 0,
+		  "services to scan for, separated by commas" },
+		{ 't', "connect-timeout", "TIMEOUT", 0,
+		  "timeout for connect, in seconds"
+		  " (default: " XSTRINGIFY (DEFAULT_CONNECT_TIMEOUT) ")" },
+		{ 'T', "scan-timeout", "TIMEOUT", 0,
+		  "timeout for service scans, in seconds"
+		  " (default: " XSTRINGIFY (DEFAULT_SCAN_TIMEOUT) ")" },
+		{ 'w', "write-default-cfg", "FILENAME",
+		  OPT_OPTIONAL_ARG | OPT_LONG_ONLY,
+		  "write a default configuration file and exit" },
+		{ 0, NULL, NULL, 0, NULL }
 	};
 
-	while (1)
+	struct opt_handler oh;
+	opt_handler_init (&oh, argc, argv, opts,
+		"{ ADDRESS [/MASK] }...", "Experimental network scanner.");
+
+	int c;
+	while ((c = opt_handler_get (&oh)) != -1)
 	{
-		int c, opt_index;
-
-		c = getopt_long (argc, argv, "dhVp:s:", opts, &opt_index);
-		if (c == -1)
-			break;
-
 		switch (c)
 		{
+			unsigned long ul;
 		case 'd':
 			g_debug_mode = true;
 			break;
 		case 'h':
-			print_usage (invocation_name);
+			opt_handler_usage (&oh);
 			exit (EXIT_SUCCESS);
 		case 'V':
 			printf (PROGRAM_NAME " " PROGRAM_VERSION "\n");
 			exit (EXIT_SUCCESS);
 		case 'p':
-			if (!list_foreach (optarg,
-				(list_foreach_fn) add_port_range, &ctx))
+			if (!list_foreach (optarg, (list_foreach_fn) add_port_range, ctx))
 				exit (EXIT_FAILURE);
 			break;
 		case 's':
-			if (!list_foreach (optarg,
-				(list_foreach_fn) add_service, &ctx))
+			if (!list_foreach (optarg, (list_foreach_fn) add_service, ctx))
 				exit (EXIT_FAILURE);
+			break;
+		case 't':
+			if (!xstrtoul (&ul, optarg, 10) || !ul)
+			{
+				print_error ("invalid value for %s", "connect timeout");
+				exit (EXIT_FAILURE);
+			}
+			ctx->connect_timeout = ul;
+			break;
+		case 'T':
+			if (!xstrtoul (&ul, optarg, 10) || !ul)
+			{
+				print_error ("invalid value for %s", "scan timeout");
+				exit (EXIT_FAILURE);
+			}
+			ctx->scan_timeout = ul;
 			break;
 		case 'w':
 			call_write_default_config (optarg, g_config_table);
 			exit (EXIT_SUCCESS);
 		default:
 			print_error ("wrong options");
+			opt_handler_usage (&oh);
 			exit (EXIT_FAILURE);
 		}
 	}
@@ -1131,21 +1332,29 @@ main (int argc, char *argv[])
 
 	if (!argc)
 	{
-		print_usage (invocation_name);
+		opt_handler_usage (&oh);
 		exit (EXIT_FAILURE);
 	}
 
-	// Resolve all the scan targets
 	for (int i = 0; i < argc; i++)
-		if (!add_target (&ctx, argv[i]))
+		if (!add_target (ctx, argv[i]))
 			exit (EXIT_FAILURE);
+
+	opt_handler_free (&oh);
+}
+
+int
+main (int argc, char *argv[])
+{
+	struct app_context ctx;
+	app_context_init (&ctx);
+	parse_program_arguments (&ctx, argc, argv);
 
 	setup_signal_handlers ();
 
 	SSL_library_init ();
 	atexit (EVP_cleanup);
 	SSL_load_error_strings ();
-	// XXX: ERR_load_BIO_strings()?  Anything else?
 	atexit (ERR_free_strings);
 
 	struct error *e = NULL;

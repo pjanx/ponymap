@@ -94,6 +94,9 @@ extern char **environ;
 #define MIN(a, b)  ((a) < (b) ? (a) : (b))
 #define MAX(a, b)  ((a) > (b) ? (a) : (b))
 
+#define STRINGIFY(x) #x
+#define XSTRINGIFY(x) STRINGIFY (x)
+
 // --- Logging -----------------------------------------------------------------
 
 static void
