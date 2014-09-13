@@ -23,6 +23,9 @@
 #include <dirent.h>
 #include <dlfcn.h>
 
+#include <curses.h>
+#include <term.h>
+
 // --- Configuration (application-specific) ------------------------------------
 
 #define DEFAULT_CONNECT_TIMEOUT  10
@@ -34,6 +37,101 @@ static struct config_item g_config_table[] =
 	{ "plugin_dir",      NULL,              "Where to search for plugins"    },
 	{ NULL,              NULL,              NULL                             }
 };
+
+// --- Fancy terminal output ---------------------------------------------------
+
+static struct
+{
+	bool initialized;                   ///< Terminal is available
+	bool stdout_is_tty;                 ///< `stdout' is a terminal
+	bool stderr_is_tty;                 ///< `stderr' is a terminal
+
+	char *color_set[8];                 ///< Codes to set the foreground colour
+}
+g_terminal;
+
+static void
+init_terminal (void)
+{
+	int tty_fd = -1;
+	if ((g_terminal.stderr_is_tty = isatty (STDERR_FILENO)))
+		tty_fd = STDERR_FILENO;
+	if ((g_terminal.stdout_is_tty = isatty (STDOUT_FILENO)))
+		tty_fd = STDOUT_FILENO;
+
+	if (tty_fd == -1 || setupterm (NULL, tty_fd, NULL) == ERR)
+		return;
+
+	// Make sure all terminal features used by us are supported
+	if (!set_a_foreground || !orig_pair
+	 || !enter_standout_mode || !exit_standout_mode
+	 || !clr_bol)
+	{
+		del_curterm (cur_term);
+		return;
+	}
+
+	for (size_t i = 0; i < N_ELEMENTS (g_terminal.color_set); i++)
+		g_terminal.color_set[i] = xstrdup (tparm (set_a_foreground,
+			i, 0, 0, 0, 0, 0, 0, 0, 0));
+
+	g_terminal.initialized = true;
+}
+
+static void
+free_terminal (void)
+{
+	if (!g_terminal.initialized)
+		return;
+
+	for (size_t i = 0; i < N_ELEMENTS (g_terminal.color_set); i++)
+		free (g_terminal.color_set[i]);
+	del_curterm (cur_term);
+}
+
+typedef int (*terminal_printer_fn) (int);
+
+static int
+putchar_stderr (int c)
+{
+	return fputc (c, stderr);
+}
+
+static terminal_printer_fn
+get_terminal_printer (FILE *stream)
+{
+	if (!g_terminal.initialized)
+		return NULL;
+
+	if (stream == stdout && g_terminal.stdout_is_tty)
+		return putchar;
+	if (stream == stderr && g_terminal.stderr_is_tty)
+		return putchar_stderr;
+	return NULL;
+}
+
+static void
+print_color (FILE *stream, int color, const char *s)
+{
+	terminal_printer_fn printer = get_terminal_printer (stream);
+
+	if (printer && color != -1)
+		tputs (g_terminal.color_set[color], 1, printer);
+
+	fputs (s, stream);
+
+	if (printer && color != -1)
+		tputs (orig_pair, 1, printer);
+}
+
+static void
+print_bold (FILE *stream, const char *s)
+{
+	terminal_printer_fn printer = get_terminal_printer (stream);
+	if (printer)  tputs (enter_standout_mode, 1, printer);
+	fputs (s, stream);
+	if (printer)  tputs (exit_standout_mode, 1, printer);
+}
 
 // --- Application data --------------------------------------------------------
 
@@ -109,7 +207,7 @@ struct transport
 	/// The underlying socket may have become writeable, flush `write_buffer';
 	/// return false if the connection has failed.
 	enum transport_io_result (*on_writeable) (struct unit *u);
-	/// Return event mask to use for the poller
+	/// Return event mask to use in the poller
 	int (*get_poll_events) (struct unit *u);
 };
 
@@ -168,6 +266,13 @@ struct job_generator
 	struct transport *transport_iter;   ///< Transport iterator
 };
 
+struct indicator
+{
+	unsigned position;                  ///< The current animation character
+	const char *frames;                 ///< All the characters
+	size_t frames_len;                  ///< The number of characters
+};
+
 struct app_context
 {
 	struct str_map config;              ///< User configuration
@@ -181,6 +286,7 @@ struct app_context
 	struct str_map services;            ///< All registered services
 	struct transport *transports;       ///< All available transports
 	struct job_generator generator;     ///< Job generator
+	struct indicator indicator;         ///< Status indicator
 
 	SSL_CTX *ssl_ctx;                   ///< OpenSSL context
 #if 0
@@ -239,6 +345,27 @@ app_context_free (struct app_context *self)
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+#define INDICATOR_INTERVAL  500
+
+static void
+indicator_init (struct indicator *self)
+{
+	static const char frames[] = "-\\|/";
+	self->position = 0;
+	self->frames = frames;
+	self->frames_len = sizeof frames - 1;
+}
+
+static void
+on_indicator_tick (struct app_context *ctx)
+{
+	// TODO: animate
+	poller_timers_add (&ctx->poller.timers,
+		(poller_timer_fn) on_indicator_tick, ctx, INDICATOR_INTERVAL);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
 static void target_unref (struct target *self);
 static void on_unit_ready (const struct pollfd *pfd, struct unit *u);
 
@@ -250,7 +377,7 @@ unit_update_poller (struct unit *u, const struct pollfd *pfd)
 
 	if (!pfd || pfd->events != new_events)
 		poller_set (&u->target->ctx->poller, u->socket_fd, new_events,
-			(poller_dispatcher_func) on_unit_ready, u);
+			(poller_dispatcher_fn) on_unit_ready, u);
 }
 
 static void
@@ -324,52 +451,6 @@ initiate_quit (struct app_context *ctx)
 	ctx->quitting = true;
 	// TODO: abort and kill all units
 	try_finish_quit (ctx);
-}
-
-// --- Signals -----------------------------------------------------------------
-
-static int g_signal_pipe[2];            ///< A pipe used to signal... signals
-
-/// Program termination has been requested by a signal
-static volatile sig_atomic_t g_termination_requested;
-
-static void
-sigterm_handler (int signum)
-{
-	(void) signum;
-
-	g_termination_requested = true;
-
-	int original_errno = errno;
-	if (write (g_signal_pipe[1], "t", 1) == -1)
-		soft_assert (errno == EAGAIN);
-	errno = original_errno;
-}
-
-static void
-setup_signal_handlers (void)
-{
-	if (pipe (g_signal_pipe) == -1)
-		exit_fatal ("%s: %s", "pipe", strerror (errno));
-
-	set_cloexec (g_signal_pipe[0]);
-	set_cloexec (g_signal_pipe[1]);
-
-	// So that the pipe cannot overflow; it would make write() block within
-	// the signal handler, which is something we really don't want to happen.
-	// The same holds true for read().
-	set_blocking (g_signal_pipe[0], false);
-	set_blocking (g_signal_pipe[1], false);
-
-	signal (SIGPIPE, SIG_IGN);
-
-	struct sigaction sa;
-	sa.sa_flags = SA_RESTART;
-	sigemptyset (&sa.sa_mask);
-	sa.sa_handler = sigterm_handler;
-	if (sigaction (SIGINT, &sa, NULL) == -1
-	 || sigaction (SIGTERM, &sa, NULL) == -1)
-		exit_fatal ("sigaction: %s", strerror (errno));
 }
 
 // --- Plugins -----------------------------------------------------------------
@@ -743,26 +824,35 @@ initialize_tls (struct app_context *ctx)
 
 // --- Scanning ----------------------------------------------------------------
 
+static struct target *
+target_ref (struct target *self)
+{
+	self->ref_count++;
+	return self;
+}
+
 static void
 target_unref (struct target *self)
 {
 	if (!self || --self->ref_count)
 		return;
 
+	// TODO: hide the indicator -> ncurses
 	// TODO: present the results; if we've been interrupted by the user,
 	//   say that they're only partial
+	// TODO: show the indicator again
 
 	free (self->hostname);
 	free (self);
 }
 
 static void
-job_generator_new_target (struct app_context *ctx)
+job_generator_make_target (struct app_context *ctx)
 {
 	struct job_generator *g = &ctx->generator;
 
 	struct target *target = xcalloc (1, sizeof *target);
-	target_unref (g->current_target);
+	hard_assert (g->current_target == NULL);
 	g->current_target = target;
 
 	target->ref_count = 1;
@@ -779,7 +869,7 @@ job_generator_init (struct app_context *ctx)
 	g->ip_range_iter = ctx->ip_list;
 	g->ip_iter = g->ip_range_iter->start;
 	g->current_target = NULL;
-	job_generator_new_target (ctx);
+	job_generator_make_target (ctx);
 
 	g->port_range_iter = ctx->port_list;
 	g->port_iter = g->port_range_iter->start;
@@ -791,18 +881,46 @@ job_generator_init (struct app_context *ctx)
 }
 
 static void
+on_unit_scan_timeout (struct unit *u)
+{
+	// TODO: cancel the unit
+}
+
+static void
+on_unit_connect_timeout (struct unit *u)
+{
+	// TODO: cancel the unit
+}
+
+static void
+unit_start_scan (struct unit *u)
+{
+	struct app_context *ctx = u->target->ctx;
+	poller_timers_add (&ctx->poller.timers,
+		(poller_timer_fn) on_unit_scan_timeout, u, ctx->scan_timeout);
+	unit_update_poller (u, NULL);
+}
+
+static void
 on_unit_connected (const struct pollfd *pfd, struct unit *u)
 {
-	// TODO: we haven't received the connect event
-	//   -> reset the connect timer
-	//   -> set the scan timer
-	unit_update_poller (u, NULL);
+	(void) pfd;
+	struct app_context *ctx = u->target->ctx;
+
+	ssize_t i = poller_timers_find (&ctx->poller.timers,
+		(poller_timer_fn) on_unit_connect_timeout, u);
+	hard_assert (i != -1);
+	poller_timers_remove_at_index (&ctx->poller.timers, i);
+	unit_start_scan (u);
 }
 
 static bool
 job_generator_run (struct app_context *ctx, uint32_t ip, uint16_t port,
 	struct service *service, struct transport *transport)
 {
+	if (!ctx->generator.current_target)
+		job_generator_make_target (ctx);
+
 	int sockfd = socket (AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	set_blocking (sockfd, false);
 
@@ -820,27 +938,32 @@ job_generator_run (struct app_context *ctx, uint32_t ip, uint16_t port,
 		return false;
 
 	struct unit *u = xcalloc (1, sizeof *u);
-	// TODO: set a timer for timeout: established ? scan : connect
+	unit_init (u);
 
-	// Initialize the service
-	u->service = service;
-	u->service_data = service->scan_init (u);
-
-	// Initialize the transport
 	u->transport = transport;
 	if (!transport->init (u))
 	{
 		xclose (sockfd);
-		service->scan_free (u->service_data);
+		unit_free (u);
 		free (u);
 		return false;
 	}
 
+	u->target = target_ref (ctx->generator.current_target);
+	LIST_PREPEND (u->target->running_units, u);
+
+	u->service = service;
+	u->service_data = service->scan_init (u);
+
 	if (established)
-		unit_update_poller (u, NULL);
+		unit_start_scan (u);
 	else
+	{
+		poller_timers_add (&ctx->poller.timers,
+			(poller_timer_fn) on_unit_connect_timeout, u, ctx->connect_timeout);
 		poller_set (&u->target->ctx->poller, u->socket_fd, POLLOUT,
-			(poller_dispatcher_func) on_unit_connected, u);
+			(poller_dispatcher_fn) on_unit_connected, u);
+	}
 	return true;
 }
 
@@ -890,6 +1013,10 @@ job_generator_step (struct app_context *ctx)
 	g->port_range_iter = ctx->port_list;
 	g->port_iter = g->port_range_iter->start;
 
+	// Moving on to the next target
+	target_unref (g->current_target);
+	g->current_target = NULL;
+
 	// Try to find the next IP to scan
 	if (g->ip_iter != UINT32_MAX && g->ip_iter < g->ip_range_iter->end)
 	{
@@ -907,152 +1034,50 @@ job_generator_step (struct app_context *ctx)
 	return false;
 }
 
-// --- Option handler ----------------------------------------------------------
+// --- Signals -----------------------------------------------------------------
 
-// Simple wrapper for the getopt_long API to make it easier to use and maintain.
+static int g_signal_pipe[2];            ///< A pipe used to signal... signals
 
-#define OPT_USAGE_ALIGNMENT_COLUMN 30   ///< Alignment for option descriptions
-
-enum
-{
-	OPT_OPTIONAL_ARG  = (1 << 0),       ///< The argument is optional
-	OPT_LONG_ONLY     = (1 << 1)        ///< Ignore the short name in opt_string
-};
-
-// All options need to have both a short name, and a long name.  The short name
-// is what is returned from opt_handler_get().  It is possible to define a value
-// completely out of the character range combined with the OPT_LONG_ONLY flag.
-//
-// When `arg_hint' is defined, the option is assumed to have an argument.
-
-struct opt
-{
-	int short_name;                     ///< The single-letter name
-	const char *long_name;              ///< The long name
-	const char *arg_hint;               ///< Option argument hint
-	int flags;                          ///< Option flags
-	const char *description;            ///< Option description
-};
-
-struct opt_handler
-{
-	int argc;                           ///< The number of program arguments
-	char **argv;                        ///< Program arguments
-
-	const char *arg_hint;               ///< Program arguments hint
-	const char *description;            ///< Description of the program
-
-	const struct opt *opts;             ///< The list of options
-	size_t opts_len;                    ///< The length of the option array
-
-	struct option *options;             ///< The list of options for getopt
-	char *opt_string;                   ///< The `optstring' for getopt
-};
+/// Program termination has been requested by a signal
+static volatile sig_atomic_t g_termination_requested;
 
 static void
-opt_handler_free (struct opt_handler *self)
+sigterm_handler (int signum)
 {
-	free (self->options);
-	free (self->opt_string);
+	(void) signum;
+
+	g_termination_requested = true;
+
+	int original_errno = errno;
+	if (write (g_signal_pipe[1], "t", 1) == -1)
+		soft_assert (errno == EAGAIN);
+	errno = original_errno;
 }
 
 static void
-opt_handler_init (struct opt_handler *self, int argc, char **argv,
-	const struct opt *opts, const char *arg_hint, const char *description)
+setup_signal_handlers (void)
 {
-	memset (self, 0, sizeof *self);
-	self->argc = argc;
-	self->argv = argv;
-	self->arg_hint = arg_hint;
-	self->description = description;
+	if (pipe (g_signal_pipe) == -1)
+		exit_fatal ("%s: %s", "pipe", strerror (errno));
 
-	size_t len = 0;
-	for (const struct opt *iter = opts; iter->long_name; iter++)
-		len++;
+	set_cloexec (g_signal_pipe[0]);
+	set_cloexec (g_signal_pipe[1]);
 
-	self->opts = opts;
-	self->opts_len = len;
-	self->options = xcalloc (len + 1, sizeof *self->options);
+	// So that the pipe cannot overflow; it would make write() block within
+	// the signal handler, which is something we really don't want to happen.
+	// The same holds true for read().
+	set_blocking (g_signal_pipe[0], false);
+	set_blocking (g_signal_pipe[1], false);
 
-	struct str opt_string;
-	str_init (&opt_string);
+	signal (SIGPIPE, SIG_IGN);
 
-	for (size_t i = 0; i < len; i++)
-	{
-		const struct opt *opt = opts + i;
-		struct option *mapped = self->options + i;
-
-		mapped->name = opt->long_name;
-		if (!opt->arg_hint)
-			mapped->has_arg = no_argument;
-		else if (opt->flags & OPT_OPTIONAL_ARG)
-			mapped->has_arg = optional_argument;
-		else
-			mapped->has_arg = required_argument;
-		mapped->val = opt->short_name;
-
-		if (opt->flags & OPT_LONG_ONLY)
-			continue;
-
-		str_append_c (&opt_string, opt->short_name);
-		if (opt->arg_hint)
-		{
-			str_append_c (&opt_string, ':');
-			if (opt->flags & OPT_OPTIONAL_ARG)
-				str_append_c (&opt_string, ':');
-		}
-	}
-
-	self->opt_string = str_steal (&opt_string);
-}
-
-static void
-opt_handler_usage (struct opt_handler *self)
-{
-	struct str usage;
-	str_init (&usage);
-
-	str_append_printf (&usage, "Usage: %s [OPTION]... %s\n",
-		self->argv[0], self->arg_hint ? self->arg_hint : "");
-	str_append_printf (&usage, "%s\n\n", self->description);
-
-	for (size_t i = 0; i < self->opts_len; i++)
-	{
-		struct str row;
-		str_init (&row);
-
-		const struct opt *opt = self->opts + i;
-		if (!(opt->flags & OPT_LONG_ONLY))
-			str_append_printf (&row, "  -%c, ", opt->short_name);
-		else
-			str_append (&row, "      ");
-		str_append_printf (&row, "--%s", opt->long_name);
-		if (opt->arg_hint)
-			str_append_printf (&row, (opt->flags & OPT_OPTIONAL_ARG)
-				? " [%s]" : " %s", opt->arg_hint);
-
-		if (row.len + 2 <= OPT_USAGE_ALIGNMENT_COLUMN)
-		{
-			str_append (&row, "  ");
-			str_append_printf (&usage, "%-*s%s\n",
-				OPT_USAGE_ALIGNMENT_COLUMN, row.str, opt->description);
-		}
-		else
-			str_append_printf (&usage, "%s\n%-*s%s\n", row.str,
-				OPT_USAGE_ALIGNMENT_COLUMN, "", opt->description);
-
-		str_free (&row);
-	}
-
-	fputs (usage.str, stderr);
-	str_free (&usage);
-}
-
-static int
-opt_handler_get (struct opt_handler *self)
-{
-	return getopt_long (self->argc, self->argv,
-		self->opt_string, self->options, NULL);
+	struct sigaction sa;
+	sa.sa_flags = SA_RESTART;
+	sigemptyset (&sa.sa_mask);
+	sa.sa_handler = sigterm_handler;
+	if (sigaction (SIGINT, &sa, NULL) == -1
+	 || sigaction (SIGTERM, &sa, NULL) == -1)
+		exit_fatal ("sigaction: %s", strerror (errno));
 }
 
 // --- Main program ------------------------------------------------------------
@@ -1280,51 +1305,49 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv)
 
 	int c;
 	while ((c = opt_handler_get (&oh)) != -1)
+	switch (c)
 	{
-		switch (c)
+		unsigned long ul;
+	case 'd':
+		g_debug_mode = true;
+		break;
+	case 'h':
+		opt_handler_usage (&oh);
+		exit (EXIT_SUCCESS);
+	case 'V':
+		printf (PROGRAM_NAME " " PROGRAM_VERSION "\n");
+		exit (EXIT_SUCCESS);
+	case 'p':
+		if (!list_foreach (optarg, (list_foreach_fn) add_port_range, ctx))
+			exit (EXIT_FAILURE);
+		break;
+	case 's':
+		if (!list_foreach (optarg, (list_foreach_fn) add_service, ctx))
+			exit (EXIT_FAILURE);
+		break;
+	case 't':
+		if (!xstrtoul (&ul, optarg, 10) || !ul)
 		{
-			unsigned long ul;
-		case 'd':
-			g_debug_mode = true;
-			break;
-		case 'h':
-			opt_handler_usage (&oh);
-			exit (EXIT_SUCCESS);
-		case 'V':
-			printf (PROGRAM_NAME " " PROGRAM_VERSION "\n");
-			exit (EXIT_SUCCESS);
-		case 'p':
-			if (!list_foreach (optarg, (list_foreach_fn) add_port_range, ctx))
-				exit (EXIT_FAILURE);
-			break;
-		case 's':
-			if (!list_foreach (optarg, (list_foreach_fn) add_service, ctx))
-				exit (EXIT_FAILURE);
-			break;
-		case 't':
-			if (!xstrtoul (&ul, optarg, 10) || !ul)
-			{
-				print_error ("invalid value for %s", "connect timeout");
-				exit (EXIT_FAILURE);
-			}
-			ctx->connect_timeout = ul;
-			break;
-		case 'T':
-			if (!xstrtoul (&ul, optarg, 10) || !ul)
-			{
-				print_error ("invalid value for %s", "scan timeout");
-				exit (EXIT_FAILURE);
-			}
-			ctx->scan_timeout = ul;
-			break;
-		case 'w':
-			call_write_default_config (optarg, g_config_table);
-			exit (EXIT_SUCCESS);
-		default:
-			print_error ("wrong options");
-			opt_handler_usage (&oh);
+			print_error ("invalid value for %s", "connect timeout");
 			exit (EXIT_FAILURE);
 		}
+		ctx->connect_timeout = ul;
+		break;
+	case 'T':
+		if (!xstrtoul (&ul, optarg, 10) || !ul)
+		{
+			print_error ("invalid value for %s", "scan timeout");
+			exit (EXIT_FAILURE);
+		}
+		ctx->scan_timeout = ul;
+		break;
+	case 'w':
+		call_write_default_config (optarg, g_config_table);
+		exit (EXIT_SUCCESS);
+	default:
+		print_error ("wrong options");
+		opt_handler_usage (&oh);
+		exit (EXIT_FAILURE);
 	}
 
 	argc -= optind;
@@ -1352,6 +1375,9 @@ main (int argc, char *argv[])
 
 	setup_signal_handlers ();
 
+	init_terminal ();
+	atexit (free_terminal);
+
 	SSL_library_init ();
 	atexit (EVP_cleanup);
 	SSL_load_error_strings ();
@@ -1366,7 +1392,7 @@ main (int argc, char *argv[])
 	}
 
 	poller_set (&ctx.poller, g_signal_pipe[0], POLLIN,
-		(poller_dispatcher_func) on_signal_pipe_readable, &ctx);
+		(poller_dispatcher_fn) on_signal_pipe_readable, &ctx);
 
 	if (!load_plugins (&ctx))
 		exit (EXIT_FAILURE);

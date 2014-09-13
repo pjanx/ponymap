@@ -604,7 +604,7 @@ struct str_map_iter
 
 #define STR_MAP_MIN_ALLOC 16
 
-typedef void (*str_map_free_func) (void *);
+typedef void (*str_map_free_fn) (void *);
 
 static void
 str_map_init (struct str_map *self)
@@ -843,15 +843,15 @@ xclose (int fd)
 // I don't expect this to be much of an issue, as there are typically not going
 // to be that many FD's to watch, and the linear approach is cache-friendly.
 
-typedef void (*poller_dispatcher_func) (const struct pollfd *, void *);
-typedef void (*poller_timer_func) (void *);
+typedef void (*poller_dispatcher_fn) (const struct pollfd *, void *);
+typedef void (*poller_timer_fn) (void *);
 
 #define POLLER_MIN_ALLOC 16
 
 struct poller_timer_info
 {
 	int64_t when;                       ///< When is the timer to expire
-	poller_timer_func dispatcher;       ///< Event dispatcher
+	poller_timer_fn dispatcher;         ///< Event dispatcher
 	void *user_data;                    ///< User data
 };
 
@@ -960,7 +960,7 @@ poller_timers_heapify_up (struct poller_timers *self, size_t index)
 
 static ssize_t
 poller_timers_find (struct poller_timers *self,
-	poller_timer_func dispatcher, void *data)
+	poller_timer_fn dispatcher, void *data)
 {
 	// NOTE: there may be duplicates.
 	for (size_t i = 0; i < self->len; i++)
@@ -981,7 +981,7 @@ poller_timers_find_by_data (struct poller_timers *self, void *data)
 
 static void
 poller_timers_add (struct poller_timers *self,
-	poller_timer_func dispatcher, void *data, int timeout_ms)
+	poller_timer_fn dispatcher, void *data, int timeout_ms)
 {
 	if (self->len == self->alloc)
 		self->info = xreallocarray (self->info,
@@ -1017,7 +1017,7 @@ struct poller_info
 {
 	int fd;                             ///< Our file descriptor
 	short events;                       ///< The poll() events we registered for
-	poller_dispatcher_func dispatcher;  ///< Event dispatcher
+	poller_dispatcher_fn dispatcher;    ///< Event dispatcher
 	void *user_data;                    ///< User data
 };
 
@@ -1124,7 +1124,7 @@ poller_poll_to_epoll_events (short events)
 
 static void
 poller_set (struct poller *self, int fd, short events,
-	poller_dispatcher_func dispatcher, void *data)
+	poller_dispatcher_fn dispatcher, void *data)
 {
 	ssize_t index = poller_find_by_fd (self, fd);
 	bool modifying = true;
@@ -1223,7 +1223,7 @@ poller_run (struct poller *self)
 
 struct poller_info
 {
-	poller_dispatcher_func dispatcher;  ///< Event dispatcher
+	poller_dispatcher_fn dispatcher;    ///< Event dispatcher
 	void *user_data;                    ///< User data
 };
 
@@ -1280,7 +1280,7 @@ poller_ensure_space (struct poller *self)
 
 static void
 poller_set (struct poller *self, int fd, short events,
-	poller_dispatcher_func dispatcher, void *data)
+	poller_dispatcher_fn dispatcher, void *data)
 {
 	ssize_t index = poller_find_by_fd (self, fd);
 	if (index == -1)
@@ -1831,4 +1831,153 @@ call_write_default_config (const char *hint, const struct config_item *table)
 	}
 	print_status ("configuration written to `%s'", filename);
 	free (filename);
+}
+
+// --- Option handler ----------------------------------------------------------
+
+// Simple wrapper for the getopt_long API to make it easier to use and maintain.
+
+#define OPT_USAGE_ALIGNMENT_COLUMN 30   ///< Alignment for option descriptions
+
+enum
+{
+	OPT_OPTIONAL_ARG  = (1 << 0),       ///< The argument is optional
+	OPT_LONG_ONLY     = (1 << 1)        ///< Ignore the short name in opt_string
+};
+
+// All options need to have both a short name, and a long name.  The short name
+// is what is returned from opt_handler_get().  It is possible to define a value
+// completely out of the character range combined with the OPT_LONG_ONLY flag.
+//
+// When `arg_hint' is defined, the option is assumed to have an argument.
+
+struct opt
+{
+	int short_name;                     ///< The single-letter name
+	const char *long_name;              ///< The long name
+	const char *arg_hint;               ///< Option argument hint
+	int flags;                          ///< Option flags
+	const char *description;            ///< Option description
+};
+
+struct opt_handler
+{
+	int argc;                           ///< The number of program arguments
+	char **argv;                        ///< Program arguments
+
+	const char *arg_hint;               ///< Program arguments hint
+	const char *description;            ///< Description of the program
+
+	const struct opt *opts;             ///< The list of options
+	size_t opts_len;                    ///< The length of the option array
+
+	struct option *options;             ///< The list of options for getopt
+	char *opt_string;                   ///< The `optstring' for getopt
+};
+
+static void
+opt_handler_free (struct opt_handler *self)
+{
+	free (self->options);
+	free (self->opt_string);
+}
+
+static void
+opt_handler_init (struct opt_handler *self, int argc, char **argv,
+	const struct opt *opts, const char *arg_hint, const char *description)
+{
+	memset (self, 0, sizeof *self);
+	self->argc = argc;
+	self->argv = argv;
+	self->arg_hint = arg_hint;
+	self->description = description;
+
+	size_t len = 0;
+	for (const struct opt *iter = opts; iter->long_name; iter++)
+		len++;
+
+	self->opts = opts;
+	self->opts_len = len;
+	self->options = xcalloc (len + 1, sizeof *self->options);
+
+	struct str opt_string;
+	str_init (&opt_string);
+
+	for (size_t i = 0; i < len; i++)
+	{
+		const struct opt *opt = opts + i;
+		struct option *mapped = self->options + i;
+
+		mapped->name = opt->long_name;
+		if (!opt->arg_hint)
+			mapped->has_arg = no_argument;
+		else if (opt->flags & OPT_OPTIONAL_ARG)
+			mapped->has_arg = optional_argument;
+		else
+			mapped->has_arg = required_argument;
+		mapped->val = opt->short_name;
+
+		if (opt->flags & OPT_LONG_ONLY)
+			continue;
+
+		str_append_c (&opt_string, opt->short_name);
+		if (opt->arg_hint)
+		{
+			str_append_c (&opt_string, ':');
+			if (opt->flags & OPT_OPTIONAL_ARG)
+				str_append_c (&opt_string, ':');
+		}
+	}
+
+	self->opt_string = str_steal (&opt_string);
+}
+
+static void
+opt_handler_usage (struct opt_handler *self)
+{
+	struct str usage;
+	str_init (&usage);
+
+	str_append_printf (&usage, "Usage: %s [OPTION]... %s\n",
+		self->argv[0], self->arg_hint ? self->arg_hint : "");
+	str_append_printf (&usage, "%s\n\n", self->description);
+
+	for (size_t i = 0; i < self->opts_len; i++)
+	{
+		struct str row;
+		str_init (&row);
+
+		const struct opt *opt = self->opts + i;
+		if (!(opt->flags & OPT_LONG_ONLY))
+			str_append_printf (&row, "  -%c, ", opt->short_name);
+		else
+			str_append (&row, "      ");
+		str_append_printf (&row, "--%s", opt->long_name);
+		if (opt->arg_hint)
+			str_append_printf (&row, (opt->flags & OPT_OPTIONAL_ARG)
+				? " [%s]" : " %s", opt->arg_hint);
+
+		// TODO: keep the indent if there are multiple lines
+		if (row.len + 2 <= OPT_USAGE_ALIGNMENT_COLUMN)
+		{
+			str_append (&row, "  ");
+			str_append_printf (&usage, "%-*s%s\n",
+				OPT_USAGE_ALIGNMENT_COLUMN, row.str, opt->description);
+		}
+		else
+			str_append_printf (&usage, "%s\n%-*s%s\n", row.str,
+				OPT_USAGE_ALIGNMENT_COLUMN, "", opt->description);
+
+		str_free (&row);
+	}
+
+	fputs (usage.str, stderr);
+	str_free (&usage);
+}
+
+static int
+opt_handler_get (struct opt_handler *self)
+{
+	return getopt_long (self->argc, self->argv,
+		self->opt_string, self->options, NULL);
 }
