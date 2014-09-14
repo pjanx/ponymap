@@ -9,7 +9,7 @@ LDFLAGS = `pkg-config --libs libssl` -lpthread -lrt -ldl -lcurses
 .PHONY: all clean
 .SUFFIXES:
 
-targets = ponymap plugins/http.so plugins/irc.so
+targets = ponymap plugins/http.so plugins/irc.so plugins/ssh.so
 
 all: $(targets)
 

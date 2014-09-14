@@ -65,7 +65,7 @@ init_terminal (void)
 	// Make sure all terminal features used by us are supported
 	if (!set_a_foreground || !orig_pair
 	 || !enter_standout_mode || !exit_standout_mode
-	 || !clr_bol)
+	 || !clr_bol || !cursor_left)
 	{
 		del_curterm (cur_term);
 		return;
@@ -128,9 +128,14 @@ static void
 print_bold (FILE *stream, const char *s)
 {
 	terminal_printer_fn printer = get_terminal_printer (stream);
-	if (printer)  tputs (enter_standout_mode, 1, printer);
+
+	if (printer)
+		tputs (enter_standout_mode, 1, printer);
+
 	fputs (s, stream);
-	if (printer)  tputs (exit_standout_mode, 1, printer);
+
+	if (printer)
+		tputs (exit_standout_mode, 1, printer);
 }
 
 // --- Application data --------------------------------------------------------
@@ -149,6 +154,8 @@ port_range_delete (struct port_range *self)
 {
 	free (self);
 }
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 struct ip_range
 {
@@ -178,9 +185,49 @@ struct target
 	uint32_t ip;                        ///< IP address
 	char *hostname;                     ///< Hostname
 
-	struct unit *running_units;         ///< All the currently running units
-	// TODO: some fields with results
+	/// All units that have ended, successfully finding a service.  These don't
+	/// hold a reference to us as they're considered a part of this object;
+	/// we hold a reference to them.
+	struct unit *results;
+
+	/// All currently running units for this target, holding a reference to us.
+	/// They remove themselves from this list upon terminating.  The purpose of
+	/// this list is making it possible to abort them forcefully.
+	struct unit *running_units;
 };
+
+static struct target *target_ref (struct target *self);
+static void target_unref (struct target *self);
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+struct unit
+{
+	LIST_HEADER (unit)
+	size_t ref_count;                   ///< Reference count
+	struct target *target;              ///< Target context
+
+	uint16_t port;                      ///< The scanned port
+
+	struct service *service;            ///< Service
+	void *service_data;                 ///< User data for service
+
+	struct transport *transport;        ///< Transport methods
+	void *transport_data;               ///< User data for transport
+
+	int socket_fd;                      ///< The TCP socket
+	struct str read_buffer;             ///< Unprocessed input
+	struct str write_buffer;            ///< Output yet to be sent out
+
+	bool aborted;                       ///< Scan has been aborted
+	bool success;                       ///< Service has been found
+	struct str_vector info;             ///< Info resulting from the scan
+};
+
+static struct unit *unit_ref (struct unit *self);
+static void unit_unref (struct unit *self);
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 enum transport_io_result
 {
@@ -211,47 +258,41 @@ struct transport
 	int (*get_poll_events) (struct unit *u);
 };
 
-struct unit
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+#define INDICATOR_INTERVAL  500
+
+struct indicator
 {
-	LIST_HEADER (unit)
-	struct target *target;              ///< Target context
+	unsigned position;                  ///< The current animation character
+	const char *frames;                 ///< All the characters
+	size_t frames_len;                  ///< The number of characters
 
-	struct service *service;            ///< Service
-	void *service_data;                 ///< User data for service
-
-	struct transport *transport;        ///< Transport methods
-	void *transport_data;               ///< User data for transport
-
-	int socket_fd;                      ///< The TCP socket
-	struct str read_buffer;             ///< Unprocessed input
-	struct str write_buffer;            ///< Output yet to be sent out
-
-	bool aborted;                       ///< Scan has been aborted
-	bool success;                       ///< Service has been found
-	struct str_vector info;             ///< Info resulting from the scan
+	bool shown;                         ///< The indicator is shown on screen
+	char *status;                       ///< The status text
 };
 
 static void
-unit_init (struct unit *self)
+indicator_init (struct indicator *self)
 {
-	memset (self, 0, sizeof *self);
+	static const char frames[] = "-\\|/";
+	self->position = 0;
+	self->frames = frames;
+	self->frames_len = sizeof frames - 1;
 
-	str_init (&self->read_buffer);
-	str_init (&self->write_buffer);
-	str_vector_init (&self->info);
+	self->status = NULL;
+	self->shown = false;
 }
 
 static void
-unit_free (struct unit *self)
+indicator_free (struct indicator *self)
 {
-	str_free (&self->read_buffer);
-	str_free (&self->write_buffer);
-	str_vector_free (&self->info);
+	free (self->status);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-struct job_generator
+struct generator
 {
 	struct ip_range *ip_range_iter;     ///< Current IP range
 	uint32_t ip_iter;                   ///< IP iterator within the range
@@ -266,18 +307,13 @@ struct job_generator
 	struct transport *transport_iter;   ///< Transport iterator
 };
 
-struct indicator
-{
-	unsigned position;                  ///< The current animation character
-	const char *frames;                 ///< All the characters
-	size_t frames_len;                  ///< The number of characters
-};
-
 struct app_context
 {
 	struct str_map config;              ///< User configuration
 	unsigned connect_timeout;           ///< Hard timeout for connect()
 	unsigned scan_timeout;              ///< Hard timeout for service scans
+
+	SSL_CTX *ssl_ctx;                   ///< OpenSSL context
 
 	struct str_map svc_list;            ///< List of services to scan for
 	struct port_range *port_list;       ///< List of ports to scan on
@@ -285,13 +321,11 @@ struct app_context
 
 	struct str_map services;            ///< All registered services
 	struct transport *transports;       ///< All available transports
-	struct job_generator generator;     ///< Job generator
+	struct generator generator;         ///< Unit generator
 	struct indicator indicator;         ///< Status indicator
 
-	SSL_CTX *ssl_ctx;                   ///< OpenSSL context
-#if 0
 	struct target *running_targets;     ///< List of currently scanned targets
-#endif
+
 	struct poller poller;               ///< Manages polled descriptors
 	bool quitting;                      ///< User requested quitting
 	bool polling;                       ///< The event loop is running
@@ -311,6 +345,7 @@ app_context_init (struct app_context *self)
 
 	str_map_init (&self->svc_list);
 	str_map_init (&self->services);
+	indicator_init (&self->indicator);
 	// Ignoring the generator so far
 
 	poller_init (&self->poller);
@@ -343,31 +378,100 @@ app_context_free (struct app_context *self)
 		SSL_CTX_free (self->ssl_ctx);
 }
 
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+// --- Progress indicator ------------------------------------------------------
 
-#define INDICATOR_INTERVAL  500
-
-static void
-indicator_init (struct indicator *self)
-{
-	static const char frames[] = "-\\|/";
-	self->position = 0;
-	self->frames = frames;
-	self->frames_len = sizeof frames - 1;
-}
+static void indicator_set_timer (struct app_context *ctx);
 
 static void
 on_indicator_tick (struct app_context *ctx)
 {
+	struct indicator *self = &ctx->indicator;
+	if (!self->shown)
+		return;
+
 	// TODO: animate
+	indicator_set_timer (ctx);
+}
+
+static void
+indicator_set_timer (struct app_context *ctx)
+{
 	poller_timers_add (&ctx->poller.timers,
 		(poller_timer_fn) on_indicator_tick, ctx, INDICATOR_INTERVAL);
 }
 
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+static void
+indicator_show (struct indicator *self)
+{
+	if (!g_terminal.initialized || !g_terminal.stdout_is_tty)
+		return;
 
-static void target_unref (struct target *self);
+	// TODO
+}
+
+// --- Scan units --------------------------------------------------------------
+
 static void on_unit_ready (const struct pollfd *pfd, struct unit *u);
+
+static struct unit *
+unit_ref (struct unit *self)
+{
+	self->ref_count++;
+	return self;
+}
+
+static void
+unit_unref (struct unit *self)
+{
+	if (!self || --self->ref_count)
+		return;
+
+	target_unref (self->target);
+
+	str_free (&self->read_buffer);
+	str_free (&self->write_buffer);
+	str_vector_free (&self->info);
+
+	free (self);
+}
+
+static void
+unit_abort (struct unit *u)
+{
+	if (u->aborted)
+		return;
+
+	u->aborted = true;
+	u->service->on_aborted (u->service_data, u);
+
+	u->transport->cleanup (u);
+	u->transport_data = NULL;
+
+	u->service->scan_free (u->service_data);
+	u->service_data = NULL;
+
+	xclose (u->socket_fd);
+	u->socket_fd = -1;
+
+	// We're no longer running
+	LIST_UNLINK (u->target->running_units, u);
+
+	// Get rid of all timers
+	struct poller *poller = &u->target->ctx->poller;
+	ssize_t i;
+	while ((i = poller_timers_find_by_data (&poller->timers, u)) != -1)
+		poller_timers_remove_at_index (&poller->timers, i);
+
+	if (u->success)
+	{
+		// Now we're a part of the target
+		LIST_PREPEND (u->target->results, u);
+		target_unref (u->target);
+		u->target = NULL;
+	}
+	else
+		unit_unref (u);
+}
 
 static void
 unit_update_poller (struct unit *u, const struct pollfd *pfd)
@@ -381,31 +485,15 @@ unit_update_poller (struct unit *u, const struct pollfd *pfd)
 }
 
 static void
-unit_abort (struct unit *u)
-{
-	if (u->aborted)
-		return;
-
-	u->aborted = true;
-	u->service->on_aborted (u->service_data, u);
-}
-
-static void
-unit_destroy (struct unit *u)
-{
-	LIST_UNLINK (u->target->running_units, u);
-	target_unref (u->target);
-
-	// TODO: transfer the results?
-	free (u);
-}
-
-static void
 on_unit_ready (const struct pollfd *pfd, struct unit *u)
 {
 	struct transport *transport = u->transport;
 	struct service *service = u->service;
 	enum transport_io_result result;
+
+	// We hold a reference so that unit_abort(), which may also be
+	// called by handlers within the service, doesn't free the unit.
+	unit_ref (u);
 
 	if ((result = transport->on_readable (u)))
 		goto exception;
@@ -416,15 +504,14 @@ on_unit_ready (const struct pollfd *pfd, struct unit *u)
 		str_remove_slice (buf, 0, buf->len);
 
 		if (u->aborted)
-			return;
+			goto end;
 	}
 
-	if (!(result = transport->on_writeable (u)))
-	{
-		if (!u->aborted)
-			unit_update_poller (u, pfd);
-		return;
-	}
+	if ((result = transport->on_writeable (u)))
+		goto exception;
+	if (!u->aborted)
+		unit_update_poller (u, pfd);
+	goto end;
 
 exception:
 	if (result == TRANSPORT_IO_EOF)
@@ -433,7 +520,130 @@ exception:
 		service->on_error (u->service_data, u);
 
 	unit_abort (u);
-	unit_destroy (u);
+
+end:
+	unit_unref (u);
+}
+
+static void
+unit_start_scan (struct unit *u)
+{
+	struct app_context *ctx = u->target->ctx;
+	poller_timers_add (&ctx->poller.timers,
+		(poller_timer_fn) unit_abort, u, ctx->scan_timeout);
+	unit_update_poller (u, NULL);
+}
+
+static void
+on_unit_connected (const struct pollfd *pfd, struct unit *u)
+{
+	(void) pfd;
+	struct app_context *ctx = u->target->ctx;
+
+	ssize_t i = poller_timers_find (&ctx->poller.timers,
+		(poller_timer_fn) unit_abort, u);
+	hard_assert (i != -1);
+	poller_timers_remove_at_index (&ctx->poller.timers, i);
+
+	int error;
+	socklen_t error_len = sizeof error;
+	if (!getsockopt (pfd->fd, SOL_SOCKET, SO_ERROR, &error, &error_len)
+	 && error != 0)
+	{
+		// XXX: what if we get EADDRNOTAVAIL in here?  Can we?  If yes,
+		//   we'll have to return the request back to the generator to retry.
+		// XXX: we could also call bind separately, with INADDR_ANY, 0.
+		//   Then EADDRINUSE (as per man 2 bind) means port exhaustion.
+		//   But POSIX seems to say that this can block, too.
+		soft_assert (error != EADDRNOTAVAIL);
+
+		unit_abort (u);
+		return;
+	}
+
+	unit_start_scan (u);
+}
+
+static struct unit *
+unit_new (struct target *target, int socket_fd, uint16_t port,
+	struct service *service, struct transport *transport)
+{
+	struct unit *u = xcalloc (1, sizeof *u);
+	u->ref_count = 1;
+	u->target = target_ref (target);
+	u->socket_fd = socket_fd;
+	u->port = port;
+	u->service = service;
+	u->transport = transport;
+
+	str_init (&u->read_buffer);
+	str_init (&u->write_buffer);
+	str_vector_init (&u->info);
+
+	if (!transport->init (u))
+	{
+		unit_unref (u);
+		return NULL;
+	}
+
+	u->service_data = service->scan_init (u);
+	LIST_PREPEND (target->running_units, u);
+	return u;
+}
+
+enum unit_make_result
+{
+	UNIT_MAKE_OK,                       ///< Operation completed successfully
+	UNIT_MAKE_ERROR,                    ///< Unspecified error occured
+	UNIT_MAKE_TRY_AGAIN                 ///< Try again later
+};
+
+static enum unit_make_result
+unit_make (struct target *target, uint32_t ip, uint16_t port,
+	struct service *service, struct transport *transport)
+{
+	// TODO: more exhaustive checking of errno
+
+	struct app_context *ctx = target->ctx;
+	int socket_fd = socket (AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (socket_fd == -1)
+		return errno == EMFILE
+			? UNIT_MAKE_TRY_AGAIN
+			: UNIT_MAKE_ERROR;
+	set_blocking (socket_fd, false);
+
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_addr.s_addr = htonl (ip);
+	addr.sin_port = htons (port);
+
+	bool connected;
+	if (!connect (socket_fd, (struct sockaddr *) &addr, sizeof addr))
+		connected = true;
+	else if (errno == EINPROGRESS)
+		connected = false;
+	else
+		return errno == EADDRNOTAVAIL
+			? UNIT_MAKE_TRY_AGAIN
+			: UNIT_MAKE_ERROR;
+
+	struct unit *u;
+	if (!(u = unit_new (target, socket_fd, port, service, transport)))
+	{
+		xclose (socket_fd);
+		return UNIT_MAKE_ERROR;
+	}
+
+	if (connected)
+		unit_start_scan (u);
+	else
+	{
+		poller_timers_add (&ctx->poller.timers,
+			(poller_timer_fn) unit_abort, u, ctx->connect_timeout);
+		poller_set (&ctx->poller, u->socket_fd, POLLOUT,
+			(poller_dispatcher_fn) on_unit_connected, u);
+	}
+	return UNIT_MAKE_OK;
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -441,7 +651,7 @@ exception:
 static void
 try_finish_quit (struct app_context *ctx)
 {
-	if (ctx->quitting)
+	if (ctx->quitting && !ctx->running_targets)
 		ctx->polling = false;
 }
 
@@ -449,7 +659,25 @@ static void
 initiate_quit (struct app_context *ctx)
 {
 	ctx->quitting = true;
-	// TODO: abort and kill all units
+
+	// Abort all running units
+	struct target *t_iter, *t_next;
+	for (t_iter = ctx->running_targets; t_iter; t_iter = t_next)
+	{
+		t_next = t_iter->next;
+
+		struct unit *u_iter, *u_next;
+		for (u_iter = t_iter->running_units; u_iter; u_iter = u_next)
+		{
+			u_next = u_iter->next;
+			unit_abort (u_iter);
+		}
+	}
+
+	// Let the current target die
+	target_unref (ctx->generator.current_target);
+	ctx->generator.current_target = NULL;
+
 	try_finish_quit (ctx);
 }
 
@@ -822,7 +1050,7 @@ initialize_tls (struct app_context *ctx)
 	LIST_PREPEND (ctx->transports, &g_transport_tls);
 }
 
-// --- Scanning ----------------------------------------------------------------
+// --- Job generation and result aggregation -----------------------------------
 
 static struct target *
 target_ref (struct target *self)
@@ -839,17 +1067,29 @@ target_unref (struct target *self)
 
 	// TODO: hide the indicator -> ncurses
 	// TODO: present the results; if we've been interrupted by the user,
-	//   say that they're only partial
+	//   self->ctx->quitting, state that they're only partial
 	// TODO: show the indicator again
+
+	// These must have been aborted already (although we could do that in here)
+	hard_assert (!self->running_units);
+
+	struct unit *iter, *next;
+	for (iter = self->results; iter; iter = next)
+	{
+		next = iter->next;
+		unit_unref (iter);
+	}
+
+	LIST_UNLINK (self->ctx->running_targets, self);
 
 	free (self->hostname);
 	free (self);
 }
 
 static void
-job_generator_make_target (struct app_context *ctx)
+generator_make_target (struct app_context *ctx)
 {
-	struct job_generator *g = &ctx->generator;
+	struct generator *g = &ctx->generator;
 
 	struct target *target = xcalloc (1, sizeof *target);
 	hard_assert (g->current_target == NULL);
@@ -859,17 +1099,19 @@ job_generator_make_target (struct app_context *ctx)
 	target->ip = g->ip_iter;
 	if (g->ip_iter == g->ip_range_iter->original_address)
 		target->hostname = xstrdup (g->ip_range_iter->original_name);
+
+	LIST_PREPEND (ctx->running_targets, target);
 }
 
 static void
-job_generator_init (struct app_context *ctx)
+generator_init (struct app_context *ctx)
 {
-	struct job_generator *g = &ctx->generator;
+	struct generator *g = &ctx->generator;
 
 	g->ip_range_iter = ctx->ip_list;
 	g->ip_iter = g->ip_range_iter->start;
 	g->current_target = NULL;
-	job_generator_make_target (ctx);
+	generator_make_target (ctx);
 
 	g->port_range_iter = ctx->port_list;
 	g->port_iter = g->port_range_iter->start;
@@ -880,104 +1122,20 @@ job_generator_init (struct app_context *ctx)
 	g->transport_iter = ctx->transports;
 }
 
-static void
-on_unit_scan_timeout (struct unit *u)
-{
-	// TODO: cancel the unit
-}
-
-static void
-on_unit_connect_timeout (struct unit *u)
-{
-	// TODO: cancel the unit
-}
-
-static void
-unit_start_scan (struct unit *u)
-{
-	struct app_context *ctx = u->target->ctx;
-	poller_timers_add (&ctx->poller.timers,
-		(poller_timer_fn) on_unit_scan_timeout, u, ctx->scan_timeout);
-	unit_update_poller (u, NULL);
-}
-
-static void
-on_unit_connected (const struct pollfd *pfd, struct unit *u)
-{
-	(void) pfd;
-	struct app_context *ctx = u->target->ctx;
-
-	ssize_t i = poller_timers_find (&ctx->poller.timers,
-		(poller_timer_fn) on_unit_connect_timeout, u);
-	hard_assert (i != -1);
-	poller_timers_remove_at_index (&ctx->poller.timers, i);
-	unit_start_scan (u);
-}
-
 static bool
-job_generator_run (struct app_context *ctx, uint32_t ip, uint16_t port,
-	struct service *service, struct transport *transport)
+generator_step (struct app_context *ctx)
 {
-	if (!ctx->generator.current_target)
-		job_generator_make_target (ctx);
-
-	int sockfd = socket (AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	set_blocking (sockfd, false);
-
-	struct sockaddr_in addr;
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = htonl (ip);
-	addr.sin_port = htons (port);
-
-	bool established;
-	if (!connect (sockfd, (struct sockaddr *) &addr, sizeof addr))
-		established = true;
-	else if (errno == EINPROGRESS)
-		established = false;
-	else
-		return false;
-
-	struct unit *u = xcalloc (1, sizeof *u);
-	unit_init (u);
-
-	u->transport = transport;
-	if (!transport->init (u))
-	{
-		xclose (sockfd);
-		unit_free (u);
-		free (u);
-		return false;
-	}
-
-	u->target = target_ref (ctx->generator.current_target);
-	LIST_PREPEND (u->target->running_units, u);
-
-	u->service = service;
-	u->service_data = service->scan_init (u);
-
-	if (established)
-		unit_start_scan (u);
-	else
-	{
-		poller_timers_add (&ctx->poller.timers,
-			(poller_timer_fn) on_unit_connect_timeout, u, ctx->connect_timeout);
-		poller_set (&u->target->ctx->poller, u->socket_fd, POLLOUT,
-			(poller_dispatcher_fn) on_unit_connected, u);
-	}
-	return true;
-}
-
-static bool
-job_generator_step (struct app_context *ctx)
-{
-	struct job_generator *g = &ctx->generator;
+	struct generator *g = &ctx->generator;
 
 	// XXX: we're probably going to need a way to distinguish
 	//   between "try again" and "stop trying".
 	if (!g->ip_range_iter)
 		return false;
-	if (!job_generator_run (ctx,
-		g->ip_iter, g->port_iter, g->svc, g->transport_iter))
+
+	if (!g->current_target)
+		generator_make_target (ctx);
+	if (unit_make (g->current_target, g->ip_iter, g->port_iter,
+		g->svc, g->transport_iter) != UNIT_MAKE_OK)
 		return false;
 
 	// Try to find the next available transport
@@ -1427,7 +1585,7 @@ main (int argc, char *argv[])
 	merge_port_ranges (&ctx);
 	merge_ip_ranges (&ctx);
 
-	// TODO: initate the scan -> generate as many jobs as possible
+	// TODO: initate the scan -> generate as many units as possible
 
 	ctx.polling = true;
 	while (ctx.polling)
