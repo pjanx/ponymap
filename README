@@ -3,12 +3,16 @@ ponymap
 
 `ponymap' is an experimental network scanner, not even in the alpha stage yet.
 
+Replacing nmap is not the goal, even though it would be rather very nice to
+have a non-copyleft licensed network scanner.
+
 The ultimate purpose of this scanner is bruteforcing hosts and ports in search
-of running services.  Replacing nmap is not the goal.
+of running services of a kind.  It should be very simple and straight-forward
+to write your own service detection plugins.
 
 Building and Running
 --------------------
-Build dependencies: openssl, clang, pkg-config, GNU make, awk, sh
+Build dependencies: openssl, clang, pkg-config, GNU make, Jansson
 
 If you don't have Clang, you can edit the Makefile to use GCC or TCC, they work
 just as good.  But there's no CMake support yet, so I force it in the Makefile.

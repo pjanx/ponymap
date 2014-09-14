@@ -4,7 +4,7 @@ CC = clang
 CFLAGS = -std=c99 -Wall -Wextra -Wno-unused-function -ggdb
 # -lpthread is only there for debugging (gdb & errno)
 # -lrt is only for glibc < 2.17
-LDFLAGS = `pkg-config --libs libssl` -lpthread -lrt -ldl -lcurses
+LDFLAGS = `pkg-config --libs libssl jansson` -lpthread -lrt -ldl -lcurses
 
 .PHONY: all clean
 .SUFFIXES:

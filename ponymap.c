@@ -22,9 +22,12 @@
 #include "plugin-api.h"
 #include <dirent.h>
 #include <dlfcn.h>
+#include <arpa/inet.h>
 
 #include <curses.h>
 #include <term.h>
+
+#include <jansson.h>
 
 // --- Configuration (application-specific) ------------------------------------
 
@@ -313,6 +316,9 @@ struct app_context
 	unsigned connect_timeout;           ///< Hard timeout for connect()
 	unsigned scan_timeout;              ///< Hard timeout for service scans
 
+	json_t *json_results;               ///< The results as a JSON value
+	const char *json_filename;          ///< The filename to write JSON to
+
 	SSL_CTX *ssl_ctx;                   ///< OpenSSL context
 
 	struct str_map svc_list;            ///< List of services to scan for
@@ -376,6 +382,8 @@ app_context_free (struct app_context *self)
 
 	if (self->ssl_ctx)
 		SSL_CTX_free (self->ssl_ctx);
+	if (self->json_results)
+		json_decref (self->json_results);
 }
 
 // --- Progress indicator ------------------------------------------------------
@@ -1052,6 +1060,107 @@ initialize_tls (struct app_context *ctx)
 
 // --- Job generation and result aggregation -----------------------------------
 
+struct target_dump_data
+{
+	char address[INET_ADDRSTRLEN];      ///< The IP address as a string
+
+	struct unit **results;              ///< Results sorted by service
+	size_t results_len;                 ///< Number of results
+};
+
+static void
+target_dump_json (struct target *self, struct target_dump_data *data)
+{
+	json_t *o = json_object ();
+	json_array_append_new (self->ctx->json_results, o);
+
+	json_object_set_new (o, "address", json_string (data->address));
+	if (self->hostname)
+		json_object_set_new (o, "hostname", json_string (self->hostname));
+	if (self->ctx->quitting)
+		json_object_set_new (o, "partial", json_boolean (true));
+
+	json_t *services = json_array ();
+	json_object_set_new (o, "services", services);
+
+	struct service *last_service = NULL;
+	json_t *service, *ports;
+	for (size_t i = 0; i < data->results_len; i++)
+	{
+		struct unit *u = data->results[i];
+		if (u->service != last_service)
+		{
+			service = json_object ();
+			json_array_append_new (services, service);
+			json_object_set_new (service, "name",
+				json_string (u->service->name));
+			json_object_set_new (service, "transport",
+				json_string (u->transport->name));
+			json_object_set_new (service, "ports", ports);
+
+			last_service = u->service;
+			ports = json_array ();
+		}
+
+		json_t *port = json_object ();
+		json_array_append_new (ports, port);
+		json_object_set_new (port, "port", json_integer (u->port));
+
+		json_t *info = json_array ();
+		json_object_set_new (port, "info", info);
+		for (size_t k = 0; k < u->info.len; k++)
+			json_array_append_new (info, json_string (u->info.vector[k]));
+	}
+}
+
+static void
+target_dump_terminal (struct target *self, struct target_dump_data *data)
+{
+	// TODO: hide the indicator -> ncurses
+	// TODO: present the results; if we've been interrupted by the user,
+	//   self->ctx->quitting, state that they're only partial
+	// TODO: show the indicator again
+}
+
+static int
+unit_cmp_by_service (const void *ax, const void *bx)
+{
+	const struct unit *a = ax, *b = bx;
+	return strcmp (a->service->name, b->service->name);
+}
+
+static void
+target_dump_results (struct target *self)
+{
+	struct app_context *ctx = self->ctx;
+	struct target_dump_data data;
+
+	uint32_t address = htonl (self->ip);
+	if (!inet_ntop (AF_INET, &address, data.address, sizeof data.address))
+	{
+		print_error ("%s: %s", "inet_ntop", strerror (errno));
+		return;
+	}
+
+	size_t len = 0;
+	for (struct unit *iter = self->results; iter; iter = iter->next)
+		len++;
+
+	struct unit *sorted[len];
+	data.results = sorted;
+	data.results_len = len;
+
+	for (struct unit *iter = self->results; iter; iter = iter->next)
+		sorted[--len] = iter;
+
+	// Sort them by service name so that they can be grouped
+	qsort (sorted, N_ELEMENTS (sorted), sizeof *sorted, unit_cmp_by_service);
+
+	if (ctx->json_results)
+		target_dump_json (self, &data);
+	target_dump_terminal (self, &data);
+}
+
 static struct target *
 target_ref (struct target *self)
 {
@@ -1065,10 +1174,8 @@ target_unref (struct target *self)
 	if (!self || --self->ref_count)
 		return;
 
-	// TODO: hide the indicator -> ncurses
-	// TODO: present the results; if we've been interrupted by the user,
-	//   self->ctx->quitting, state that they're only partial
-	// TODO: show the indicator again
+	if (self->results)
+		target_dump_results (self);
 
 	// These must have been aborted already (although we could do that in here)
 	hard_assert (!self->running_units);
@@ -1451,6 +1558,8 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv)
 		{ 'T', "scan-timeout", "TIMEOUT", 0,
 		  "timeout for service scans, in seconds"
 		  " (default: " XSTRINGIFY (DEFAULT_SCAN_TIMEOUT) ")" },
+		{ 'j', "json-output", "FILENAME", OPT_LONG_ONLY,
+		  "write the results as JSON" },
 		{ 'w', "write-default-cfg", "FILENAME",
 		  OPT_OPTIONAL_ARG | OPT_LONG_ONLY,
 		  "write a default configuration file and exit" },
@@ -1498,6 +1607,10 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv)
 			exit (EXIT_FAILURE);
 		}
 		ctx->scan_timeout = ul;
+		break;
+	case 'j':
+		ctx->json_results = json_array ();
+		ctx->json_filename = optarg;
 		break;
 	case 'w':
 		call_write_default_config (optarg, g_config_table);
@@ -1590,6 +1703,10 @@ main (int argc, char *argv[])
 	ctx.polling = true;
 	while (ctx.polling)
 		poller_run (&ctx.poller);
+
+	if (ctx.json_results && !json_dump_file (ctx.json_results,
+		ctx.json_filename, JSON_INDENT (2) | JSON_SORT_KEYS | JSON_ENCODE_ANY))
+		print_error ("failed to write JSON output");
 
 	app_context_free (&ctx);
 	return EXIT_SUCCESS;
