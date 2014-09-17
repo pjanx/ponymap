@@ -20,6 +20,8 @@
 
 #include "utils.c"
 #include "plugin-api.h"
+#include <inttypes.h>
+
 #include <dirent.h>
 #include <dlfcn.h>
 #include <arpa/inet.h>
@@ -1058,6 +1060,108 @@ initialize_tls (struct app_context *ctx)
 	LIST_PREPEND (ctx->transports, &g_transport_tls);
 }
 
+// --- Tree printer ------------------------------------------------------------
+
+struct node
+{
+	struct node *next;                  ///< The next sibling in order
+	struct node *children;              ///< Children of this node
+	char *text;                         ///< Text of this node
+	bool bold;                          ///< Whether to print in bold font
+};
+
+static struct node *
+node_new (char *text)
+{
+	struct node *self = xcalloc (1, sizeof *self);
+	self->text = text;
+	return self;
+}
+
+static void
+node_delete (struct node *self)
+{
+	struct node *iter, *next;
+	for (iter = self->children; iter; iter = next)
+	{
+		next = iter->next;
+		node_delete (iter);
+	}
+	free (self->text);
+	free (self);
+}
+
+struct node_print_level
+{
+	struct node_print_level *next;      ///< Next print level
+	const char *start;                  ///< Starting indentation
+	const char *continuation;           ///< Continuation
+	bool started;                       ///< Printed starting indentation
+};
+
+struct node_print_data
+{
+	struct node_print_level *head;      ///< The first level
+	struct node_print_level **tail;     ///< Where to place further levels
+};
+
+static void
+node_print_tree_level (struct node *self, struct node_print_data *data)
+{
+	struct str indent;
+	str_init (&indent);
+
+	struct node_print_level *iter = data->head;
+	for (iter = data->head; iter; iter = iter->next)
+	{
+		bool started = iter->started;
+		iter->started = true;
+		str_append (&indent, started ? iter->continuation : iter->start);
+	}
+
+	fputs (indent.str, stdout);
+	str_free (&indent);
+
+	self->bold
+		? print_bold (stdout, self->text)
+		: fputs (self->text, stdout);
+	fputc ('\n', stdout);
+
+	struct node_print_level level;
+	level.next = NULL;
+	level.start = " |- ";
+	level.continuation = " |  ";
+	level.started = false;
+
+	struct node_print_level **prev_tail = data->tail;
+	*data->tail = &level;
+	data->tail = &level.next;
+
+	for (struct node *iter = self->children; iter; iter = iter->next)
+	{
+		if (!iter->next)
+		{
+			level.start = " '- ";
+			level.continuation = "    ";
+		}
+		level.started = false;
+		node_print_tree_level (iter, data);
+	}
+
+	data->tail = prev_tail;
+	*data->tail = NULL;
+}
+
+static void
+node_print_tree (struct node *self)
+{
+	struct node_print_data data;
+	data.head = NULL;
+	data.tail = &data.head;
+
+	node_print_tree_level (self, &data);
+}
+
 // --- Job generation and result aggregation -----------------------------------
 
 struct target_dump_data
@@ -1117,8 +1221,46 @@ static void
 target_dump_terminal (struct target *self, struct target_dump_data *data)
 {
 	// TODO: hide the indicator -> ncurses
-	// TODO: present the results; if we've been interrupted by the user,
-	//   self->ctx->quitting, state that they're only partial
+
+	struct str tmp;
+	str_init (&tmp);
+	str_append (&tmp, data->address);
+	if (self->hostname)
+		str_append_printf (&tmp, " (%s)", self->hostname);
+	if (self->ctx->quitting)
+		str_append_printf (&tmp, " (%s)", "partial");
+
+	struct node *root = node_new (str_steal (&tmp));
+	root->bold = true;
+
+	struct service *last_service = NULL;
+	struct node *service, **s_tail = &root->children, *port, **p_tail;
+	for (size_t i = 0; i < data->results_len; i++)
+	{
+		struct unit *u = data->results[i];
+		if (u->service != last_service)
+		{
+			*s_tail = service = node_new (xstrdup_printf ("%s (%s)",
+				u->service->name, u->transport->name));
+			s_tail = &service->next;
+			p_tail = &service->children;
+		}
+
+		port = *p_tail = node_new (xstrdup_printf ("port %" PRIu16, u->port));
+		p_tail = &port->next;
+
+		struct node *info, **i_tail = &port->children;
+		for (size_t k = 0; k < u->info.len; k++)
+		{
+			info = *i_tail = node_new (xstrdup (u->info.vector[k]));
+			i_tail = &info->next;
+		}
+	}
+
+	node_print_tree (root);
+	node_delete (root);
+	putchar ('\n');
+
 	// TODO: show the indicator again
 }
 
