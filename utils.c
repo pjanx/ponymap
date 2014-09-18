@@ -1214,10 +1214,10 @@ poller_run (struct poller *self)
 	if (n_fds == -1)
 		exit_fatal ("%s: %s", "epoll", strerror (errno));
 
-	poller_timers_dispatch (&self->timers);
-
 	self->dispatch_next = 0;
 	self->dispatch_total = n_fds;
+
+	poller_timers_dispatch (&self->timers);
 
 	while (self->dispatch_next < self->dispatch_total)
 	{

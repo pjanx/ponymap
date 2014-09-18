@@ -49,24 +49,6 @@ on_data (void *handle, struct unit *u, struct str *data)
 	// TODO
 }
 
-static void
-on_eof (void *handle, struct unit *u)
-{
-	// TODO
-}
-
-static void
-on_error (void *handle, struct unit *u)
-{
-	// TODO
-}
-
-static void
-on_aborted (void *handle, struct unit *u)
-{
-	// TODO
-}
-
 static struct service g_http_service =
 {
 	.name        = "HTTP",
@@ -75,9 +57,9 @@ static struct service g_http_service =
 	.scan_init   = scan_init,
 	.scan_free   = scan_free,
 	.on_data     = on_data,
-	.on_eof      = on_eof,
-	.on_error    = on_error,
-	.on_aborted  = on_aborted
+	.on_eof      = NULL,
+	.on_error    = NULL,
+	.on_aborted  = NULL
 };
 
 static bool

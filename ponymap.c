@@ -70,7 +70,7 @@ init_terminal (void)
 	// Make sure all terminal features used by us are supported
 	if (!set_a_foreground || !orig_pair
 	 || !enter_standout_mode || !exit_standout_mode
-	 || !clr_bol || !cursor_left)
+	 || !carriage_return || !cursor_left || !clr_eol)
 	{
 		del_curterm (cur_term);
 		return;
@@ -312,6 +312,10 @@ struct generator
 	struct transport *transport_iter;   ///< Transport iterator
 };
 
+static bool generator_step (struct app_context *ctx);
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
 struct app_context
 {
 	struct str_map config;              ///< User configuration
@@ -432,8 +436,9 @@ indicator_show (struct app_context *ctx)
 	if (self->shown || !g_terminal.initialized || !g_terminal.stdout_is_tty)
 		return;
 
-	tputs (clr_bol, 1, putchar);
+	tputs (carriage_return, 1, putchar);
 	printf ("%s... %c", self->status, self->frames[self->position]);
+	tputs (clr_eol, 1, putchar);
 	fflush (stdout);
 	indicator_set_timer (ctx);
 
@@ -447,7 +452,8 @@ indicator_hide (struct app_context *ctx)
 	if (!self->shown)
 		return;
 
-	tputs (clr_bol, 1, putchar);
+	tputs (carriage_return, 1, putchar);
+	tputs (clr_eol, 1, putchar);
 	fflush (stdout);
 
 	ssize_t i = poller_timers_find
@@ -503,7 +509,16 @@ unit_abort (struct unit *u)
 		return;
 
 	u->aborted = true;
-	u->service->on_aborted (u->service_data, u);
+	if (u->service->on_aborted)
+		u->service->on_aborted (u->service_data, u);
+
+	ssize_t i;
+	struct app_context *ctx = u->target->ctx;
+	struct poller *poller = &ctx->poller;
+	if ((i = poller_find_by_fd (poller, u->socket_fd)) != -1)
+		poller_remove_at_index (poller, i);
+	while ((i = poller_timers_find_by_data (&poller->timers, u)) != -1)
+		poller_timers_remove_at_index (&poller->timers, i);
 
 	u->transport->cleanup (u);
 	u->service->scan_free (u->service_data);
@@ -516,11 +531,9 @@ unit_abort (struct unit *u)
 	// We're no longer running
 	LIST_UNLINK (u->target->running_units, u);
 
-	// Get rid of all timers
-	struct poller *poller = &u->target->ctx->poller;
-	ssize_t i;
-	while ((i = poller_timers_find_by_data (&poller->timers, u)) != -1)
-		poller_timers_remove_at_index (&poller->timers, i);
+	// We might have made it possible to launch new units
+	while (generator_step (ctx))
+		;
 
 	if (u->success)
 	{
@@ -575,9 +588,15 @@ on_unit_ready (const struct pollfd *pfd, struct unit *u)
 
 exception:
 	if (result == TRANSPORT_IO_EOF)
-		service->on_eof (u->service_data, u);
+	{
+		if (service->on_eof)
+			service->on_eof (u->service_data, u);
+	}
 	else if (result == TRANSPORT_IO_ERROR)
-		service->on_error (u->service_data, u);
+	{
+		if (service->on_error)
+			service->on_error (u->service_data, u);
+	}
 
 	unit_abort (u);
 
@@ -711,9 +730,7 @@ unit_make (struct target *target, uint32_t ip, uint16_t port,
 static void
 try_finish_quit (struct app_context *ctx)
 {
-	if (ctx->quitting
-	 && !ctx->running_targets
-	 && !ctx->generator.current_target)
+	if (!ctx->running_targets && !ctx->generator.current_target)
 		ctx->polling = false;
 }
 
@@ -857,7 +874,7 @@ load_plugins (struct app_context *ctx)
 		}
 
 		char *dot = strrchr (iter->d_name, '.');
-		if (dot && !strcmp (dot, ".so"))
+		if (!dot || strcmp (dot, ".so"))
 			continue;
 
 		char *path = xstrdup_printf ("%s/%s", plugin_dir, iter->d_name);
@@ -1105,8 +1122,8 @@ initialize_tls (struct app_context *ctx)
 	}
 
 	// Fuck off, we're just scanning
-	SSL_CTX_set_verify (ctx->ssl_ctx, SSL_VERIFY_NONE, NULL);
-	SSL_CTX_set_mode (ctx->ssl_ctx,
+	SSL_CTX_set_verify (ssl_ctx, SSL_VERIFY_NONE, NULL);
+	SSL_CTX_set_mode (ssl_ctx,
 		SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
 
 	ctx->ssl_ctx = ssl_ctx;
@@ -1248,6 +1265,8 @@ target_dump_json (struct target *self, struct target_dump_data *data)
 		if (u->service != last_service)
 		{
 			service = json_object ();
+			ports = json_array ();
+
 			json_array_append_new (services, service);
 			json_object_set_new (service, "name",
 				json_string (u->service->name));
@@ -1256,7 +1275,6 @@ target_dump_json (struct target *self, struct target_dump_data *data)
 			json_object_set_new (service, "ports", ports);
 
 			last_service = u->service;
-			ports = json_array ();
 		}
 
 		json_t *port = json_object ();
@@ -1426,6 +1444,7 @@ generator_make_target (struct app_context *ctx)
 	g->current_target = target;
 
 	target->ref_count = 1;
+	target->ctx = ctx;
 	target->ip = g->ip_iter;
 	if (g->ip_iter == g->ip_range_iter->original_address)
 		target->hostname = xstrdup (g->ip_range_iter->original_name);
@@ -1458,16 +1477,21 @@ generator_step (struct app_context *ctx)
 {
 	struct generator *g = &ctx->generator;
 
-	// XXX: we're probably going to need a way to distinguish
-	//   between "try again" and "stop trying".
-	if (!g->ip_range_iter)
+	if (ctx->quitting || !g->ip_range_iter)
 		return false;
-
 	if (!g->current_target)
 		generator_make_target (ctx);
-	if (unit_make (g->current_target, g->ip_iter, g->port_iter,
-		g->svc, g->transport_iter) != UNIT_MAKE_OK)
+
+	switch (unit_make (g->current_target,
+		g->ip_iter, g->port_iter, g->svc, g->transport_iter))
+	{
+	case UNIT_MAKE_OK:
+	case UNIT_MAKE_ERROR:
+		break;
+	case UNIT_MAKE_TRY_AGAIN:
+		// TODO: set a timer for a few seconds, we might eventually get lucky
 		return false;
+	}
 
 	// Try to find the next available transport
 	while (true)
@@ -1646,7 +1670,7 @@ static bool
 add_service (struct app_context *ctx, const char *name)
 {
 	// To be resolved later
-	str_map_set (&ctx->svc_list, name, (void *) name);
+	str_map_set (&ctx->svc_list, name, xstrdup (name));
 	return true;
 }
 
@@ -1678,14 +1702,14 @@ add_target (struct app_context *ctx, const char *target)
 	}
 
 	struct ip_range *range = xcalloc (1, sizeof *range);
-	uint32_t bitmask = ~(((uint64_t) 1 << (32 - mask)) - 1);
+	uint32_t bitmask = ((uint64_t) 1 << (32 - mask)) - 1;
 
 	hard_assert (result->ai_family == AF_INET);
 	hard_assert (result->ai_addr->sa_family == AF_INET);
 	uint32_t addr = ntohl (((struct sockaddr_in *)
 		result->ai_addr)->sin_addr.s_addr);
-	range->start = addr & bitmask;
-	range->end   = addr | bitmask;
+	range->start = addr & ~bitmask;
+	range->end   = addr |  bitmask;
 	freeaddrinfo (result);
 
 	range->original_name = xstrdup (host);
@@ -1738,9 +1762,9 @@ resolve_service_names (struct app_context *ctx)
 {
 	struct str_map_iter iter;
 	str_map_iter_init (&iter, &ctx->svc_list);
-	const char *name;
+	char *name = NULL;
 	bool success = true;
-	while ((name = str_map_iter_next (&iter)))
+	while (free (name), (name = str_map_iter_next (&iter)))
 	{
 		struct service *service;
 		if ((service = str_map_find (&ctx->services, name)))
@@ -1892,8 +1916,10 @@ main (int argc, char *argv[])
 	if (!load_plugins (&ctx))
 		exit (EXIT_FAILURE);
 
-	LIST_PREPEND (ctx.transports, &g_transport_plain);
+	// TODO: make the order unimportant; this hopes all services support
+	//   the plain transport and that it is the first on the list
 	initialize_tls (&ctx);
+	LIST_PREPEND (ctx.transports, &g_transport_plain);
 
 	if (!ctx.port_list)
 	{
@@ -1922,13 +1948,16 @@ main (int argc, char *argv[])
 	merge_port_ranges (&ctx);
 	merge_ip_ranges (&ctx);
 
-	// TODO: initate the scan -> generate as many units as possible
+	// Initate the scan: generate as many units as possible
+	generator_init (&ctx);
+	while (generator_step (&ctx))
+		;
 
 	ctx.polling = true;
 	while (ctx.polling)
 		poller_run (&ctx.poller);
 
-	if (ctx.json_results && !json_dump_file (ctx.json_results,
+	if (ctx.json_results && json_dump_file (ctx.json_results,
 		ctx.json_filename, JSON_INDENT (2) | JSON_SORT_KEYS | JSON_ENCODE_ANY))
 		print_error ("failed to write JSON output");
 
