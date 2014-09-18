@@ -286,6 +286,24 @@ xstrndup (const char *s, size_t n)
 			(link)->next->prev = (link)->prev;                                 \
 	BLOCK_END
 
+#define LIST_APPEND_WITH_TAIL(head, tail, link)                                \
+	BLOCK_START                                                                \
+		(link)->prev = (tail);                                                 \
+		(link)->next = NULL;                                                   \
+		if ((link)->prev)                                                      \
+			(link)->prev->next = (link);                                       \
+		else                                                                   \
+			(head) = (link);                                                   \
+		(tail) = (link);                                                       \
+	BLOCK_END
+
+#define LIST_UNLINK_WITH_TAIL(head, tail, link)                                \
+	BLOCK_START                                                                \
+		if ((tail) == (link))                                                  \
+			(tail) = (link)->prev;                                             \
+		LIST_UNLINK ((head), (link));                                          \
+	BLOCK_END
+
 // --- Dynamically allocated string array --------------------------------------
 
 struct str_vector

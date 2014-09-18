@@ -332,7 +332,11 @@ struct app_context
 	struct generator generator;         ///< Unit generator
 	struct indicator indicator;         ///< Status indicator
 
+	// We need this list ordered from the oldest running target,
+	// therefore we track the tail to allow O(1) appends.
+
 	struct target *running_targets;     ///< List of currently scanned targets
+	struct target *running_tail;        ///< The tail link of `running_targets'
 
 	struct poller poller;               ///< Manages polled descriptors
 	bool quitting;                      ///< User requested quitting
@@ -366,6 +370,7 @@ app_context_free (struct app_context *self)
 {
 	str_map_free (&self->config);
 	str_map_free (&self->svc_list);
+	str_map_free (&self->services);
 	poller_free (&self->poller);
 
 	for (struct ip_range *iter = self->ip_list; iter; )
@@ -390,6 +395,11 @@ app_context_free (struct app_context *self)
 
 // --- Progress indicator ------------------------------------------------------
 
+// TODO: rework the poller so that we don't have to use a reference to
+//   `struct app_context' to make changes to the animation timer.
+// TODO: make it so that the indicator is hidden while printing messages to
+//   the same terminal -> wrapper for log_message_stdio().
+
 static void indicator_set_timer (struct app_context *ctx);
 
 static void
@@ -399,7 +409,12 @@ on_indicator_tick (struct app_context *ctx)
 	if (!self->shown)
 		return;
 
-	// TODO: animate
+	if (++self->position >= self->frames_len)
+		self->position = 0;
+
+	tputs (cursor_left, 1, putchar);
+	putchar (self->frames[self->position]);
+	fflush (stdout);
 	indicator_set_timer (ctx);
 }
 
@@ -411,12 +426,48 @@ indicator_set_timer (struct app_context *ctx)
 }
 
 static void
-indicator_show (struct indicator *self)
+indicator_show (struct app_context *ctx)
 {
-	if (!g_terminal.initialized || !g_terminal.stdout_is_tty)
+	struct indicator *self = &ctx->indicator;
+	if (self->shown || !g_terminal.initialized || !g_terminal.stdout_is_tty)
 		return;
 
-	// TODO
+	tputs (clr_bol, 1, putchar);
+	printf ("%s... %c", self->status, self->frames[self->position]);
+	fflush (stdout);
+	indicator_set_timer (ctx);
+
+	self->shown = true;
+}
+
+static void
+indicator_hide (struct app_context *ctx)
+{
+	struct indicator *self = &ctx->indicator;
+	if (!self->shown)
+		return;
+
+	tputs (clr_bol, 1, putchar);
+	fflush (stdout);
+
+	ssize_t i = poller_timers_find
+		(&ctx->poller.timers, (poller_timer_fn) on_indicator_tick, ctx);
+	if (i != -1)
+		poller_timers_remove_at_index (&ctx->poller.timers, i);
+}
+
+static void
+indicator_set_status (struct app_context *ctx, char *status)
+{
+	struct indicator *self = &ctx->indicator;
+	bool refresh = self->shown;
+	indicator_hide (ctx);
+
+	free (self->status);
+	self->status = status;
+
+	if (refresh)
+		indicator_show (ctx);
 }
 
 // --- Scan units --------------------------------------------------------------
@@ -455,12 +506,11 @@ unit_abort (struct unit *u)
 	u->service->on_aborted (u->service_data, u);
 
 	u->transport->cleanup (u);
-	u->transport_data = NULL;
-
 	u->service->scan_free (u->service_data);
-	u->service_data = NULL;
-
 	xclose (u->socket_fd);
+
+	u->transport_data = NULL;
+	u->service_data = NULL;
 	u->socket_fd = -1;
 
 	// We're no longer running
@@ -661,7 +711,9 @@ unit_make (struct target *target, uint32_t ip, uint16_t port,
 static void
 try_finish_quit (struct app_context *ctx)
 {
-	if (ctx->quitting && !ctx->running_targets)
+	if (ctx->quitting
+	 && !ctx->running_targets
+	 && !ctx->generator.current_target)
 		ctx->polling = false;
 }
 
@@ -669,6 +721,7 @@ static void
 initiate_quit (struct app_context *ctx)
 {
 	ctx->quitting = true;
+	indicator_set_status (ctx, xstrdup ("Quitting"));
 
 	// Abort all running units
 	struct target *t_iter, *t_next;
@@ -1220,7 +1273,7 @@ target_dump_json (struct target *self, struct target_dump_data *data)
 static void
 target_dump_terminal (struct target *self, struct target_dump_data *data)
 {
-	// TODO: hide the indicator -> ncurses
+	indicator_hide (self->ctx);
 
 	struct str tmp;
 	str_init (&tmp);
@@ -1261,7 +1314,7 @@ target_dump_terminal (struct target *self, struct target_dump_data *data)
 	node_delete (root);
 	putchar ('\n');
 
-	// TODO: show the indicator again
+	indicator_show (self->ctx);
 }
 
 static int
@@ -1303,6 +1356,26 @@ target_dump_results (struct target *self)
 	target_dump_terminal (self, &data);
 }
 
+static void
+target_update_indicator (struct target *self)
+{
+	char buf[INET_ADDRSTRLEN];
+	uint32_t address = htonl (self->ip);
+	if (!inet_ntop (AF_INET, &address, buf, sizeof buf))
+	{
+		print_error ("%s: %s", "inet_ntop", strerror (errno));
+		return;
+	}
+
+	char *status = xstrdup_printf ("Scanning %s", buf);
+	struct indicator *indicator = &self->ctx->indicator;
+	if (!indicator->status || strcmp (status, indicator->status))
+		indicator_set_status (self->ctx, status);
+	else
+		free (status);
+	indicator_show (self->ctx);
+}
+
 static struct target *
 target_ref (struct target *self)
 {
@@ -1329,15 +1402,23 @@ target_unref (struct target *self)
 		unit_unref (iter);
 	}
 
-	LIST_UNLINK (self->ctx->running_targets, self);
+	struct app_context *ctx = self->ctx;
+	LIST_UNLINK_WITH_TAIL (ctx->running_targets, ctx->running_tail, self);
+	if (!ctx->running_targets)
+		indicator_hide (ctx);
+	else if (!ctx->quitting && ctx->running_targets)
+		target_update_indicator (ctx->running_targets);
 
 	free (self->hostname);
 	free (self);
+
+	try_finish_quit (ctx);
 }
 
 static void
 generator_make_target (struct app_context *ctx)
 {
+	hard_assert (!ctx->quitting);
 	struct generator *g = &ctx->generator;
 
 	struct target *target = xcalloc (1, sizeof *target);
@@ -1349,7 +1430,8 @@ generator_make_target (struct app_context *ctx)
 	if (g->ip_iter == g->ip_range_iter->original_address)
 		target->hostname = xstrdup (g->ip_range_iter->original_name);
 
-	LIST_PREPEND (ctx->running_targets, target);
+	LIST_APPEND_WITH_TAIL (ctx->running_targets, ctx->running_tail, target);
+	target_update_indicator (ctx->running_targets);
 }
 
 static void
