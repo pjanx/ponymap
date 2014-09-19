@@ -926,21 +926,21 @@ poller_timers_heapify_down (struct poller_timers *self, size_t index)
 		timer_t *left   = self->heap + 2 * index + 1;
 		timer_t *right  = self->heap + 2 * index + 2;
 
-		timer_t *largest = parent;
-		if (left  < end && (*left) ->when > (*largest)->when)
-			largest = left;
-		if (right < end && (*right)->when > (*largest)->when)
-			largest = right;
-		if (parent == largest)
+		timer_t *lowest = parent;
+		if (left  < end && (*left) ->when < (*lowest)->when)
+			lowest = left;
+		if (right < end && (*right)->when < (*lowest)->when)
+			lowest = right;
+		if (parent == lowest)
 			break;
 
 		timer_t tmp = *parent;
-		*parent = *largest;
-		*largest = tmp;
+		*parent = *lowest;
+		*lowest = tmp;
 
-		(*parent) ->index = parent  - self->heap;
-		(*largest)->index = largest - self->heap;
-		index = largest - self->heap;
+		(*parent)->index = parent - self->heap;
+		(*lowest)->index = lowest - self->heap;
+		index = lowest - self->heap;
 	}
 }
 

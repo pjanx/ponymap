@@ -315,8 +315,8 @@ static bool generator_step (struct app_context *ctx);
 struct app_context
 {
 	struct str_map config;              ///< User configuration
-	unsigned connect_timeout;           ///< Hard timeout for connect()
-	unsigned scan_timeout;              ///< Hard timeout for service scans
+	unsigned connect_timeout;           ///< Timeout for connect() in sec.
+	unsigned scan_timeout;              ///< Timeout for service scans in sec.
 
 	json_t *json_results;               ///< The results as a JSON value
 	const char *json_filename;          ///< The filename to write JSON to
@@ -604,7 +604,7 @@ end:
 static void
 unit_start_scan (struct unit *u)
 {
-	poller_timer_set (&u->timeout_event, u->target->ctx->scan_timeout);
+	poller_timer_set (&u->timeout_event, u->target->ctx->scan_timeout * 1000);
 	u->fd_event.dispatcher = (poller_fd_fn) on_unit_ready;
 	unit_update_poller (u, NULL);
 }
@@ -717,7 +717,7 @@ unit_make (struct target *target, uint32_t ip, uint16_t port,
 		unit_start_scan (u);
 	else
 	{
-		poller_timer_set (&u->timeout_event, ctx->connect_timeout);
+		poller_timer_set (&u->timeout_event, ctx->connect_timeout * 1000);
 		poller_fd_set (&u->fd_event, POLLOUT);
 	}
 
