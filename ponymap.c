@@ -25,6 +25,7 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <arpa/inet.h>
+#include <sys/resource.h>
 
 #include <curses.h>
 #include <term.h>
@@ -1893,6 +1894,17 @@ main (int argc, char *argv[])
 	parse_program_arguments (&ctx, argc, argv);
 
 	setup_signal_handlers ();
+
+	// Set the maximum count of file descriptorts to the hard limit
+	struct rlimit limit;
+	if (getrlimit (RLIMIT_NOFILE, &limit))
+		print_warning ("%s: %s", "getrlimit failed", strerror (errno));
+	else
+	{
+		limit.rlim_cur = limit.rlim_max;
+		if (setrlimit (RLIMIT_NOFILE, &limit))
+			print_warning ("%s: %s", "setrlimit failed", strerror (errno));
+	}
 
 	init_terminal ();
 	atexit (free_terminal);
