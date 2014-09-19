@@ -1161,8 +1161,9 @@ poller_remove_at_index (struct poller *self, size_t index)
 	fd->index = -1;
 
 	poller_remove_from_dispatch (self, fd);
-	hard_assert (epoll_ctl (self->epoll_fd,
-		EPOLL_CTL_DEL, fd->fd, (void *) "") != -1);
+	if (fd->fd != -1)
+		hard_assert (epoll_ctl (self->epoll_fd,
+			EPOLL_CTL_DEL, fd->fd, (void *) "") != -1);
 
 	if (index != --self->len)
 	{

@@ -512,12 +512,15 @@ unit_abort (struct unit *u)
 	if (u->service->on_aborted)
 		u->service->on_aborted (u->service_data, u);
 
-	poller_timer_reset (&u->timeout_event);
-	poller_fd_reset (&u->fd_event);
-
 	u->transport->cleanup (u);
 	u->service->scan_free (u->service_data);
 	xclose (u->socket_fd);
+
+	poller_timer_reset (&u->timeout_event);
+
+	// This way we avoid a syscall with epoll
+	u->fd_event.fd = -1;
+	poller_fd_reset (&u->fd_event);
 
 	u->transport_data = NULL;
 	u->service_data = NULL;
