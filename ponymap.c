@@ -225,6 +225,9 @@ struct unit
 	struct str read_buffer;             ///< Unprocessed input
 	struct str write_buffer;            ///< Output yet to be sent out
 
+	struct poller_timer timeout_event;  ///< Timeout event
+	struct poller_fd fd_event;          ///< FD event
+
 	bool aborted;                       ///< Scan has been aborted
 	bool success;                       ///< Service has been found
 	struct str_vector info;             ///< Info resulting from the scan
@@ -270,6 +273,8 @@ struct transport
 
 struct indicator
 {
+	struct poller_timer timer;          ///< The animation timer
+
 	unsigned position;                  ///< The current animation character
 	const char *frames;                 ///< All the characters
 	size_t frames_len;                  ///< The number of characters
@@ -278,17 +283,7 @@ struct indicator
 	char *status;                       ///< The status text
 };
 
-static void
-indicator_init (struct indicator *self)
-{
-	static const char frames[] = "-\\|/";
-	self->position = 0;
-	self->frames = frames;
-	self->frames_len = sizeof frames - 1;
-
-	self->status = NULL;
-	self->shown = false;
-}
+static void indicator_init (struct indicator *self, struct poller *poller);
 
 static void
 indicator_free (struct indicator *self)
@@ -362,7 +357,7 @@ app_context_init (struct app_context *self)
 
 	str_map_init (&self->svc_list);
 	str_map_init (&self->services);
-	indicator_init (&self->indicator);
+	indicator_init (&self->indicator, &self->poller);
 	// Ignoring the generator so far
 
 	poller_init (&self->poller);
@@ -400,17 +395,18 @@ app_context_free (struct app_context *self)
 
 // --- Progress indicator ------------------------------------------------------
 
-// TODO: rework the poller so that we don't have to use a reference to
-//   `struct app_context' to make changes to the animation timer.
 // TODO: make it so that the indicator is hidden while printing messages to
 //   the same terminal -> wrapper for log_message_stdio().
 
-static void indicator_set_timer (struct app_context *ctx);
+static void
+indicator_set_timer (struct indicator *self)
+{
+	poller_timer_set (&self->timer, INDICATOR_INTERVAL);
+}
 
 static void
-on_indicator_tick (struct app_context *ctx)
+on_indicator_tick (struct indicator *self)
 {
-	struct indicator *self = &ctx->indicator;
 	if (!self->shown)
 		return;
 
@@ -420,20 +416,28 @@ on_indicator_tick (struct app_context *ctx)
 	tputs (cursor_left, 1, putchar);
 	putchar (self->frames[self->position]);
 	fflush (stdout);
-	indicator_set_timer (ctx);
+	indicator_set_timer (self);
 }
 
 static void
-indicator_set_timer (struct app_context *ctx)
+indicator_init (struct indicator *self, struct poller *poller)
 {
-	poller_timers_add (&ctx->poller.timers,
-		(poller_timer_fn) on_indicator_tick, ctx, INDICATOR_INTERVAL);
+	poller_timer_init (&self->timer, poller);
+	self->timer.dispatcher = (poller_timer_fn) on_indicator_tick;
+	self->timer.user_data = self;
+
+	static const char frames[] = "-\\|/";
+	self->position = 0;
+	self->frames = frames;
+	self->frames_len = sizeof frames - 1;
+
+	self->status = NULL;
+	self->shown = false;
 }
 
 static void
-indicator_show (struct app_context *ctx)
+indicator_show (struct indicator *self)
 {
-	struct indicator *self = &ctx->indicator;
 	if (self->shown || !g_terminal.initialized || !g_terminal.stdout_is_tty)
 		return;
 
@@ -441,15 +445,14 @@ indicator_show (struct app_context *ctx)
 	printf ("%s... %c", self->status, self->frames[self->position]);
 	tputs (clr_eol, 1, putchar);
 	fflush (stdout);
-	indicator_set_timer (ctx);
 
 	self->shown = true;
+	indicator_set_timer (self);
 }
 
 static void
-indicator_hide (struct app_context *ctx)
+indicator_hide (struct indicator *self)
 {
-	struct indicator *self = &ctx->indicator;
 	if (!self->shown)
 		return;
 
@@ -457,24 +460,20 @@ indicator_hide (struct app_context *ctx)
 	tputs (clr_eol, 1, putchar);
 	fflush (stdout);
 
-	ssize_t i = poller_timers_find
-		(&ctx->poller.timers, (poller_timer_fn) on_indicator_tick, ctx);
-	if (i != -1)
-		poller_timers_remove_at_index (&ctx->poller.timers, i);
+	poller_timer_reset (&self->timer);
 }
 
 static void
-indicator_set_status (struct app_context *ctx, char *status)
+indicator_set_status (struct indicator *self, char *status)
 {
-	struct indicator *self = &ctx->indicator;
 	bool refresh = self->shown;
-	indicator_hide (ctx);
+	indicator_hide (self);
 
 	free (self->status);
 	self->status = status;
 
 	if (refresh)
-		indicator_show (ctx);
+		indicator_show (self);
 }
 
 // --- Scan units --------------------------------------------------------------
@@ -513,13 +512,8 @@ unit_abort (struct unit *u)
 	if (u->service->on_aborted)
 		u->service->on_aborted (u->service_data, u);
 
-	ssize_t i;
-	struct app_context *ctx = u->target->ctx;
-	struct poller *poller = &ctx->poller;
-	if ((i = poller_find_by_fd (poller, u->socket_fd)) != -1)
-		poller_remove_at_index (poller, i);
-	while ((i = poller_timers_find_by_data (&poller->timers, u)) != -1)
-		poller_timers_remove_at_index (&poller->timers, i);
+	poller_timer_reset (&u->timeout_event);
+	poller_fd_reset (&u->fd_event);
 
 	u->transport->cleanup (u);
 	u->service->scan_free (u->service_data);
@@ -533,7 +527,7 @@ unit_abort (struct unit *u)
 	LIST_UNLINK (u->target->running_units, u);
 
 	// We might have made it possible to launch new units
-	while (generator_step (ctx))
+	while (generator_step (u->target->ctx))
 		;
 
 	if (u->success)
@@ -554,8 +548,7 @@ unit_update_poller (struct unit *u, const struct pollfd *pfd)
 	hard_assert (new_events != 0);
 
 	if (!pfd || pfd->events != new_events)
-		poller_set (&u->target->ctx->poller, u->socket_fd, new_events,
-			(poller_dispatcher_fn) on_unit_ready, u);
+		poller_fd_set (&u->fd_event, new_events);
 }
 
 static void
@@ -608,9 +601,8 @@ end:
 static void
 unit_start_scan (struct unit *u)
 {
-	struct app_context *ctx = u->target->ctx;
-	poller_timers_add (&ctx->poller.timers,
-		(poller_timer_fn) unit_abort, u, ctx->scan_timeout);
+	poller_timer_set (&u->timeout_event, u->target->ctx->scan_timeout);
+	u->fd_event.dispatcher = (poller_fd_fn) on_unit_ready;
 	unit_update_poller (u, NULL);
 }
 
@@ -618,12 +610,8 @@ static void
 on_unit_connected (const struct pollfd *pfd, struct unit *u)
 {
 	(void) pfd;
-	struct app_context *ctx = u->target->ctx;
 
-	ssize_t i = poller_timers_find (&ctx->poller.timers,
-		(poller_timer_fn) unit_abort, u);
-	hard_assert (i != -1);
-	poller_timers_remove_at_index (&ctx->poller.timers, i);
+	poller_timer_reset (&u->timeout_event);
 
 	int error;
 	socklen_t error_len = sizeof error;
@@ -665,6 +653,14 @@ unit_new (struct target *target, int socket_fd, uint16_t port,
 		unit_unref (u);
 		return NULL;
 	}
+
+	poller_timer_init (&u->timeout_event, &target->ctx->poller);
+	u->timeout_event.dispatcher = (poller_timer_fn) unit_abort;
+	u->timeout_event.user_data = u;
+
+	poller_fd_init (&u->fd_event, &target->ctx->poller, socket_fd);
+	u->fd_event.dispatcher = (poller_fd_fn) on_unit_connected;
+	u->fd_event.user_data = u;
 
 	u->service_data = service->scan_init (u);
 	LIST_PREPEND (target->running_units, u);
@@ -718,11 +714,10 @@ unit_make (struct target *target, uint32_t ip, uint16_t port,
 		unit_start_scan (u);
 	else
 	{
-		poller_timers_add (&ctx->poller.timers,
-			(poller_timer_fn) unit_abort, u, ctx->connect_timeout);
-		poller_set (&ctx->poller, u->socket_fd, POLLOUT,
-			(poller_dispatcher_fn) on_unit_connected, u);
+		poller_timer_set (&u->timeout_event, ctx->connect_timeout);
+		poller_fd_set (&u->fd_event, POLLOUT);
 	}
+
 	return UNIT_MAKE_OK;
 }
 
@@ -739,7 +734,7 @@ static void
 initiate_quit (struct app_context *ctx)
 {
 	ctx->quitting = true;
-	indicator_set_status (ctx, xstrdup ("Quitting"));
+	indicator_set_status (&ctx->indicator, xstrdup ("Quitting"));
 
 	// Abort all running units
 	struct target *t_iter, *t_next;
@@ -1292,7 +1287,7 @@ target_dump_json (struct target *self, struct target_dump_data *data)
 static void
 target_dump_terminal (struct target *self, struct target_dump_data *data)
 {
-	indicator_hide (self->ctx);
+	indicator_hide (&self->ctx->indicator);
 
 	struct str tmp;
 	str_init (&tmp);
@@ -1333,7 +1328,7 @@ target_dump_terminal (struct target *self, struct target_dump_data *data)
 	node_delete (root);
 	putchar ('\n');
 
-	indicator_show (self->ctx);
+	indicator_show (&self->ctx->indicator);
 }
 
 static int
@@ -1389,10 +1384,10 @@ target_update_indicator (struct target *self)
 	char *status = xstrdup_printf ("Scanning %s", buf);
 	struct indicator *indicator = &self->ctx->indicator;
 	if (!indicator->status || strcmp (status, indicator->status))
-		indicator_set_status (self->ctx, status);
+		indicator_set_status (&self->ctx->indicator, status);
 	else
 		free (status);
-	indicator_show (self->ctx);
+	indicator_show (&self->ctx->indicator);
 }
 
 static struct target *
@@ -1424,7 +1419,7 @@ target_unref (struct target *self)
 	struct app_context *ctx = self->ctx;
 	LIST_UNLINK_WITH_TAIL (ctx->running_targets, ctx->running_tail, self);
 	if (!ctx->running_targets)
-		indicator_hide (ctx);
+		indicator_hide (&ctx->indicator);
 	else if (!ctx->quitting && ctx->running_targets)
 		target_update_indicator (ctx->running_targets);
 
@@ -1922,8 +1917,11 @@ main (int argc, char *argv[])
 		exit (EXIT_FAILURE);
 	}
 
-	poller_set (&ctx.poller, g_signal_pipe[0], POLLIN,
-		(poller_dispatcher_fn) on_signal_pipe_readable, &ctx);
+	struct poller_fd signal_event;
+	poller_fd_init (&signal_event, &ctx.poller, g_signal_pipe[0]);
+	signal_event.dispatcher = (poller_fd_fn) on_signal_pipe_readable;
+	signal_event.user_data = &ctx;
+	poller_fd_set (&signal_event, POLLIN);
 
 	if (!load_plugins (&ctx))
 		exit (EXIT_FAILURE);
@@ -1961,6 +1959,8 @@ main (int argc, char *argv[])
 	merge_ip_ranges (&ctx);
 
 	// Initate the scan: generate as many units as possible
+	// FIXME: this appears to be quite slow: either make it run faster,
+	//   or limit the number of units spawned at a time
 	generator_init (&ctx);
 	while (generator_step (&ctx))
 		;

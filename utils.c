@@ -840,42 +840,48 @@ xclose (int fd)
 			break;
 }
 
-// --- Polling -----------------------------------------------------------------
+// --- Event loop --------------------------------------------------------------
 
 // Basically the poor man's GMainLoop/libev/libuv.  It might make some sense
 // to instead use those tested and proven libraries but we don't need much
 // and it's interesting to implement.
 
-// At the moment the FD's are stored in an unsorted array.  This is not ideal
-// complexity-wise but I don't think I have much of a choice with poll(),
-// and neither with epoll for that matter.
-//
-//                         unsorted array       sorted array
-//           search             O(n)       O(log n) [O(log log n)]
-//           insert by fd       O(n)                O(n)
-//           delete by fd       O(n)                O(n)
-//
-// Insertion in the unsorted array can be reduced to O(1) if I maintain a
-// bitmap of present FD's but that's still not a huge win.
-//
-// I don't expect this to be much of an issue, as there are typically not going
-// to be that many FD's to watch, and the linear approach is cache-friendly.
+// Actually it mustn't be totally shitty as scanning exercises it quite a bit.
+// We sacrifice some memory to allow for O(1) and O(log n) operations.
 
-typedef void (*poller_dispatcher_fn) (const struct pollfd *, void *);
+typedef void (*poller_fd_fn) (const struct pollfd *, void *);
 typedef void (*poller_timer_fn) (void *);
 
 #define POLLER_MIN_ALLOC 16
 
-struct poller_timer_info
+struct poller_timer
 {
+	struct poller_timers *timers;       ///< The timers part of our poller
+	ssize_t index;                      ///< Where we are in the array, or -1
+
 	int64_t when;                       ///< When is the timer to expire
+
 	poller_timer_fn dispatcher;         ///< Event dispatcher
 	void *user_data;                    ///< User data
 };
 
+struct poller_fd
+{
+	struct poller *poller;              ///< Our poller
+	ssize_t index;                      ///< Where we are in the array, or -1
+
+	int fd;                             ///< Our file descriptor
+	short events;                       ///< The poll() events we registered for
+
+	poller_fd_fn dispatcher;            ///< Event dispatcher
+	void *user_data;                    ///< User data
+};
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
 struct poller_timers
 {
-	struct poller_timer_info *info;     ///< Min-heap of timers
+	struct poller_timer **heap;         ///< Min-heap of timers
 	size_t len;                         ///< Number of scheduled timers
 	size_t alloc;                       ///< Number of timers allocated
 };
@@ -885,13 +891,13 @@ poller_timers_init (struct poller_timers *self)
 {
 	self->alloc = POLLER_MIN_ALLOC;
 	self->len = 0;
-	self->info = xmalloc (self->alloc * sizeof *self->info);
+	self->heap = xmalloc (self->alloc * sizeof *self->heap);
 }
 
 static void
 poller_timers_free (struct poller_timers *self)
 {
-	free (self->info);
+	free (self->heap);
 }
 
 static int64_t
@@ -911,28 +917,30 @@ poller_timers_get_current_time (void)
 static void
 poller_timers_heapify_down (struct poller_timers *self, size_t index)
 {
-	typedef struct poller_timer_info info_t;
-	info_t *end = self->info + self->len;
+	typedef struct poller_timer *timer_t;
+	timer_t *end = self->heap + self->len;
 
 	while (true)
 	{
-		info_t *parent = self->info + index;
-		info_t *left   = self->info + 2 * index + 1;
-		info_t *right  = self->info + 2 * index + 2;
+		timer_t *parent = self->heap + index;
+		timer_t *left   = self->heap + 2 * index + 1;
+		timer_t *right  = self->heap + 2 * index + 2;
 
-		info_t *largest = parent;
-		if (left  < end && left->when  > largest->when)
+		timer_t *largest = parent;
+		if (left  < end && (*left) ->when > (*largest)->when)
 			largest = left;
-		if (right < end && right->when > largest->when)
+		if (right < end && (*right)->when > (*largest)->when)
 			largest = right;
 		if (parent == largest)
 			break;
 
-		info_t tmp = *parent;
+		timer_t tmp = *parent;
 		*parent = *largest;
 		*largest = tmp;
 
-		index = largest - self->info;
+		(*parent) ->index = parent  - self->heap;
+		(*largest)->index = largest - self->heap;
+		index = largest - self->heap;
 	}
 }
 
@@ -940,10 +948,12 @@ static void
 poller_timers_remove_at_index (struct poller_timers *self, size_t index)
 {
 	hard_assert (index < self->len);
+	self->heap[index]->index = -1;
 	if (index == --self->len)
 		return;
 
-	self->info[index] = self->info[self->len];
+	self->heap[index] = self->heap[self->len];
+	self->heap[index]->index = index;
 	poller_timers_heapify_down (self, index);
 }
 
@@ -951,11 +961,11 @@ static void
 poller_timers_dispatch (struct poller_timers *self)
 {
 	int64_t now = poller_timers_get_current_time ();
-	while (self->len && self->info->when <= now)
+	while (self->len && self->heap[0]->when <= now)
 	{
-		struct poller_timer_info info = *self->info;
+		struct poller_timer *timer = self->heap[0];
 		poller_timers_remove_at_index (self, 0);
-		info.dispatcher (info.user_data);
+		timer->dispatcher (timer->user_data);
 	}
 }
 
@@ -965,49 +975,35 @@ poller_timers_heapify_up (struct poller_timers *self, size_t index)
 	while (index != 0)
 	{
 		size_t parent = (index - 1) / 2;
-		if (self->info[parent].when <= self->info[index].when)
+		if (self->heap[parent]->when <= self->heap[index]->when)
 			break;
 
-		struct poller_timer_info tmp = self->info[parent];
-		self->info[parent] = self->info[index];
-		self->info[index] = tmp;
+		struct poller_timer *tmp = self->heap[parent];
+		self->heap[parent] = self->heap[index];
+		self->heap[index] = tmp;
 
+		self->heap[parent]->index = parent;
+		self->heap[index] ->index = index;
 		index = parent;
 	}
 }
 
-static ssize_t
-poller_timers_find (struct poller_timers *self,
-	poller_timer_fn dispatcher, void *data)
-{
-	// NOTE: there may be duplicates.
-	for (size_t i = 0; i < self->len; i++)
-		if (self->info[i].dispatcher == dispatcher
-		 && self->info[i].user_data == data)
-			return i;
-	return -1;
-}
-
-static ssize_t
-poller_timers_find_by_data (struct poller_timers *self, void *data)
-{
-	for (size_t i = 0; i < self->len; i++)
-		if (self->info[i].user_data == data)
-			return i;
-	return -1;
-}
-
 static void
-poller_timers_add (struct poller_timers *self,
-	poller_timer_fn dispatcher, void *data, int timeout_ms)
+poller_timers_set (struct poller_timers *self, struct poller_timer *timer)
 {
-	if (self->len == self->alloc)
-		self->info = xreallocarray (self->info,
-			self->alloc <<= 1, sizeof *self->info);
+	hard_assert (timer->timers == self);
+	if (timer->index != -1)
+	{
+		poller_timers_heapify_down (self, timer->index);
+		poller_timers_heapify_up (self, timer->index);
+		return;
+	}
 
-	self->info[self->len] = (struct poller_timer_info) {
-		.when = poller_timers_get_current_time () + timeout_ms,
-		.dispatcher = dispatcher, .user_data = data };
+	if (self->len == self->alloc)
+		self->heap = xreallocarray (self->heap,
+			self->alloc <<= 1, sizeof *self->heap);
+	self->heap[self->len] = timer;
+	timer->index = self->len;
 	poller_timers_heapify_up (self, self->len++);
 }
 
@@ -1017,7 +1013,7 @@ poller_timers_get_poll_timeout (struct poller_timers *self)
 	if (!self->len)
 		return -1;
 
-	int64_t timeout = self->info->when - poller_timers_get_current_time ();
+	int64_t timeout = self->heap[0]->when - poller_timers_get_current_time ();
 	if (timeout <= 0)
 		return 0;
 	if (timeout > INT_MAX)
@@ -1025,24 +1021,15 @@ poller_timers_get_poll_timeout (struct poller_timers *self)
 	return timeout;
 }
 
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
 #ifdef __linux__
-
-// I don't really need this, I've basically implemented this just because I can.
-
 #include <sys/epoll.h>
-
-struct poller_info
-{
-	int fd;                             ///< Our file descriptor
-	short events;                       ///< The poll() events we registered for
-	poller_dispatcher_fn dispatcher;    ///< Event dispatcher
-	void *user_data;                    ///< User data
-};
 
 struct poller
 {
 	int epoll_fd;                       ///< The epoll FD
-	struct poller_info **info;          ///< Information associated with each FD
+	struct poller_fd **fds;             ///< Information associated with each FD
 	struct epoll_event *revents;        ///< Output array for epoll_wait()
 	size_t len;                         ///< Number of polled descriptors
 	size_t alloc;                       ///< Number of entries allocated
@@ -1065,7 +1052,7 @@ poller_init (struct poller *self)
 
 	self->len = 0;
 	self->alloc = POLLER_MIN_ALLOC;
-	self->info = xcalloc (self->alloc, sizeof *self->info);
+	self->fds = xcalloc (self->alloc, sizeof *self->fds);
 	self->revents = xcalloc (self->alloc, sizeof *self->revents);
 
 	poller_timers_init (&self->timers);
@@ -1079,26 +1066,16 @@ poller_free (struct poller *self)
 {
 	for (size_t i = 0; i < self->len; i++)
 	{
-		struct poller_info *info = self->info[i];
+		struct poller_fd *fd = self->fds[i];
 		hard_assert (epoll_ctl (self->epoll_fd,
-			EPOLL_CTL_DEL, info->fd, (void *) "") != -1);
-		free (info);
+			EPOLL_CTL_DEL, fd->fd, (void *) "") != -1);
 	}
 
 	poller_timers_free (&self->timers);
 
 	xclose (self->epoll_fd);
-	free (self->info);
+	free (self->fds);
 	free (self->revents);
-}
-
-static ssize_t
-poller_find_by_fd (struct poller *self, int fd)
-{
-	for (size_t i = 0; i < self->len; i++)
-		if (self->info[i]->fd == fd)
-			return i;
-	return -1;
 }
 
 static void
@@ -1112,8 +1089,8 @@ poller_ensure_space (struct poller *self)
 
 	self->revents = xreallocarray
 		(self->revents, sizeof *self->revents, self->alloc);
-	self->info = xreallocarray
-		(self->info, sizeof *self->info, self->alloc);
+	self->fds = xreallocarray
+		(self->fds, sizeof *self->fds, self->alloc);
 }
 
 static short
@@ -1141,41 +1118,33 @@ poller_poll_to_epoll_events (short events)
 }
 
 static void
-poller_set (struct poller *self, int fd, short events,
-	poller_dispatcher_fn dispatcher, void *data)
+poller_set (struct poller *self, struct poller_fd *fd)
 {
-	ssize_t index = poller_find_by_fd (self, fd);
+	hard_assert (fd->poller == self);
 	bool modifying = true;
-	if (index == -1)
+	if (fd->index == -1)
 	{
 		poller_ensure_space (self);
-		self->info[index = self->len++] = xcalloc (1, sizeof **self->info);
+		self->fds[fd->index = self->len++] = fd;
 		modifying = false;
 	}
 
-	struct poller_info *info = self->info[index];
-	info->fd = fd;
-	info->events = events;
-	info->dispatcher = dispatcher;
-	info->user_data = data;
-
 	struct epoll_event event;
-	event.events = poller_poll_to_epoll_events (events);
-	event.data.ptr = info;
+	event.events = poller_poll_to_epoll_events (fd->events);
+	event.data.ptr = fd;
 	hard_assert (epoll_ctl (self->epoll_fd,
-		modifying ? EPOLL_CTL_MOD : EPOLL_CTL_ADD, fd, &event) != -1);
+		modifying ? EPOLL_CTL_MOD : EPOLL_CTL_ADD, fd->fd, &event) != -1);
 }
 
 static void
-poller_remove_from_dispatch (struct poller *self,
-	const struct poller_info *info)
+poller_remove_from_dispatch (struct poller *self, const struct poller_fd *fd)
 {
 	if (!self->dispatch_total)
 		return;
 
 	int i;
 	for (i = self->dispatch_next; i < self->dispatch_total; i++)
-		if (self->revents[i].data.ptr == info)
+		if (self->revents[i].data.ptr == fd)
 			break;
 	if (i == self->dispatch_total)
 		return;
@@ -1188,15 +1157,18 @@ static void
 poller_remove_at_index (struct poller *self, size_t index)
 {
 	hard_assert (index < self->len);
-	struct poller_info *info = self->info[index];
+	struct poller_fd *fd = self->fds[index];
+	fd->index = -1;
 
-	poller_remove_from_dispatch (self, info);
+	poller_remove_from_dispatch (self, fd);
 	hard_assert (epoll_ctl (self->epoll_fd,
-		EPOLL_CTL_DEL, info->fd, (void *) "") != -1);
+		EPOLL_CTL_DEL, fd->fd, (void *) "") != -1);
 
-	free (info);
 	if (index != --self->len)
-		self->info[index] = self->info[self->len];
+	{
+		self->fds[index] = self->fds[self->len];
+		self->fds[index]->index = index;
+	}
 }
 
 static void
@@ -1222,15 +1194,15 @@ poller_run (struct poller *self)
 	while (self->dispatch_next < self->dispatch_total)
 	{
 		struct epoll_event *revents = self->revents + self->dispatch_next;
-		struct poller_info *info = revents->data.ptr;
+		struct poller_fd *fd = revents->data.ptr;
 
 		struct pollfd pfd;
-		pfd.fd = info->fd;
+		pfd.fd = fd->fd;
 		pfd.revents = poller_epoll_to_poll_events (revents->events);
-		pfd.events = info->events;
+		pfd.events = fd->events;
 
 		self->dispatch_next++;
-		info->dispatcher (&pfd, info->user_data);
+		fd->dispatcher (&pfd, fd->user_data);
 	}
 
 	self->dispatch_next = 0;
@@ -1239,16 +1211,10 @@ poller_run (struct poller *self)
 
 #else  // !__linux__
 
-struct poller_info
-{
-	poller_dispatcher_fn dispatcher;    ///< Event dispatcher
-	void *user_data;                    ///< User data
-};
-
 struct poller
 {
 	struct pollfd *fds;                 ///< Polled descriptors
-	struct poller_info *fds_info;       ///< Additional information for each FD
+	struct poller_fd **fds_data;        ///< Additional information for each FD
 	size_t len;                         ///< Number of polled descriptors
 	size_t alloc;                       ///< Number of entries allocated
 
@@ -1262,7 +1228,7 @@ poller_init (struct poller *self)
 	self->alloc = POLLER_MIN_ALLOC;
 	self->len = 0;
 	self->fds = xcalloc (self->alloc, sizeof *self->fds);
-	self->fds_info = xcalloc (self->alloc, sizeof *self->fds_info);
+	self->fds_data = xcalloc (self->alloc, sizeof *self->fds_data);
 	poller_timers_init (&self->timers);
 	self->dispatch_next = -1;
 }
@@ -1271,17 +1237,8 @@ static void
 poller_free (struct poller *self)
 {
 	free (self->fds);
-	free (self->fds_info);
+	free (self->fds_data);
 	poller_timers_free (&self->timers);
-}
-
-static ssize_t
-poller_find_by_fd (struct poller *self, int fd)
-{
-	for (size_t i = 0; i < self->len; i++)
-		if (self->fds[i].fd == fd)
-			return i;
-	return -1;
 }
 
 static void
@@ -1292,33 +1249,33 @@ poller_ensure_space (struct poller *self)
 
 	self->alloc <<= 1;
 	self->fds = xreallocarray (self->fds, sizeof *self->fds, self->alloc);
-	self->fds_info = xreallocarray
-		(self->fds_info, sizeof *self->fds_info, self->alloc);
+	self->fds_data = xreallocarray
+		(self->fds_data, sizeof *self->fds_data, self->alloc);
 }
 
 static void
-poller_set (struct poller *self, int fd, short events,
-	poller_dispatcher_fn dispatcher, void *data)
+poller_set (struct poller *self, struct poller_fd *fd)
 {
-	ssize_t index = poller_find_by_fd (self, fd);
-	if (index == -1)
+	hard_assert (fd->poller == self);
+	if (fd->index == -1)
 	{
 		poller_ensure_space (self);
-		index = self->len++;
+		self->fds_data[fd->index = self->len++] = fd;
 	}
 
-	struct pollfd *new_entry = self->fds + index;
+	struct pollfd *new_entry = self->fds + fd->index;
 	memset (new_entry, 0, sizeof *new_entry);
-	new_entry->fd = fd;
-	new_entry->events = events;
-
-	self->fds_info[index] = (struct poller_info) { dispatcher, data };
+	new_entry->fd = fd->fd;
+	new_entry->events = fd->events;
 }
 
 static void
 poller_remove_at_index (struct poller *self, size_t index)
 {
 	hard_assert (index < self->len);
+	struct poller_fd *fd = self->fds_data[index];
+	fd->index = -1;
+
 	if (index == --self->len)
 		return;
 
@@ -1327,14 +1284,18 @@ poller_remove_at_index (struct poller *self, size_t index)
 	{
 		memmove (self->fds + index, self->fds + index + 1,
 			(self->len - index) * sizeof *self->fds);
-		memmove (self->fds_info + index, self->fds_info + index + 1,
-			(self->len - index) * sizeof *self->fds_info);
+		memmove (self->fds_data + index, self->fds_data + index + 1,
+			(self->len - index) * sizeof *self->fds_data);
+		for (size_t i = index; i < self->len; i++)
+			self->fds_data[i]->index = i;
+
 		self->dispatch_next--;
 	}
 	else
 	{
-		self->fds[index]      = self->fds[self->len];
-		self->fds_info[index] = self->fds_info[self->len];
+		self->fds[index]      = self->fds     [self->len];
+		self->fds_data[index] = self->fds_data[self->len];
+		self->fds_data[index]->index = index;
 	}
 }
 
@@ -1358,10 +1319,10 @@ poller_run (struct poller *self)
 	for (int i = 0; i < (int) self->len; )
 	{
 		struct pollfd pfd = self->fds[i];
-		struct poller_info *info = self->fds_info + i;
+		struct poller_fd *fd = self->fds_data[i];
 		self->dispatch_next = ++i;
 		if (pfd.revents)
-			info->dispatcher (&pfd, info->user_data);
+			fd->dispatcher (&pfd, fd->user_data);
 		i = self->dispatch_next;
 	}
 
@@ -1369,6 +1330,55 @@ poller_run (struct poller *self)
 }
 
 #endif  // !__linux__
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static void
+poller_timer_init(struct poller_timer *self, struct poller *poller)
+{
+	memset (self, 0, sizeof *self);
+	self->timers = &poller->timers;
+	self->index = -1;
+}
+
+static void
+poller_timer_set(struct poller_timer *self, int timeout_ms)
+{
+	self->when = poller_timers_get_current_time () + timeout_ms;
+	poller_timers_set (self->timers, self);
+}
+
+static void
+poller_timer_reset(struct poller_timer *self)
+{
+	if (self->index != -1)
+		poller_timers_remove_at_index (self->timers, self->index);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static void
+poller_fd_init(struct poller_fd *self, struct poller *poller, int fd)
+{
+	memset (self, 0, sizeof *self);
+	self->poller = poller;
+	self->index = -1;
+	self->fd = fd;
+}
+
+static void
+poller_fd_set(struct poller_fd *self, short events)
+{
+	self->events = events;
+	poller_set (self->poller, self);
+}
+
+static void
+poller_fd_reset(struct poller_fd *self)
+{
+	if (self->index != -1)
+		poller_remove_at_index (self->poller, self->index);
+}
 
 // --- Utilities ---------------------------------------------------------------
 
