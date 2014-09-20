@@ -42,8 +42,6 @@ struct scan_data
 	struct unit *u;                     ///< Scan unit
 
 	http_parser parser;                 ///< HTTP parser
-	http_parser_settings settings;      ///< HTTP parser settings
-
 	enum header_state state;            ///< What did we get last time?
 	struct str field;                   ///< Field part buffer
 	struct str value;                   ///< Value part buffer
@@ -109,11 +107,6 @@ scan_init (struct unit *u)
 	http_parser_init (&scan->parser, HTTP_RESPONSE);
 	scan->parser.data = scan;
 
-	http_parser_settings *s = &scan->settings;
-	s->on_header_field      = on_header_field;
-	s->on_header_value      = on_header_value;
-	s->on_headers_complete  = on_headers_complete;
-
 	scan->state = STATE_FIELD;
 	str_init (&scan->field);
 	str_init (&scan->value);
@@ -134,12 +127,19 @@ scan_free (void *handle)
 static void
 on_data (void *handle, struct unit *u, struct str *data)
 {
+	static const http_parser_settings http_settings =
+	{
+		.on_header_field      = on_header_field,
+		.on_header_value      = on_header_value,
+		.on_headers_complete  = on_headers_complete,
+	};
+
 	struct scan_data *scan = handle;
 	http_parser *parser = &scan->parser;
 
 	size_t len = data ? data->len : 0;
 	const char *str = data ? data->str : NULL;
-	size_t n_parsed = http_parser_execute (parser, &scan->settings, str, len);
+	size_t n_parsed = http_parser_execute (parser, &http_settings, str, len);
 
 	if (parser->upgrade)
 	{
