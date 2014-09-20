@@ -1,14 +1,15 @@
 ponymap
 =======
 
-`ponymap' is an experimental network scanner, not even in the alpha stage yet.
+`ponymap' is an experimental network scanner, of alpha quality so far.
 
 Replacing nmap is not the goal, even though it would be rather very nice to
-have a non-copyleft licensed network scanner.
+have a serious network scanner with a permissive license.
 
 The ultimate purpose of this scanner is bruteforcing hosts and ports in search
-of running services of a kind.  It should be very simple and straight-forward
-to write your own service detection plugins.
+of running services of a kind.  It should be simple and straight-forward to
+either write your own service detection plugins, provided that you're familiar
+with writing asynchronous code, or to make changes to the existing ones.
 
 Building and Running
 --------------------
