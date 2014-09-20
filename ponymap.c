@@ -836,7 +836,7 @@ load_one_plugin (struct app_context *ctx, const char *name, const char *path)
 			name, "cannot find plugin info");
 	else if (info->api_version != API_VERSION)
 		print_error ("could not load `%s': %s",
-			name, "cannot find plugin info");
+			name, "incompatible API version");
 	else if (!info->initialize (ctx, &g_plugin_vtable))
 		print_error ("could not load `%s': %s",
 			name, "plugin initialization failed");
