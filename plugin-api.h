@@ -18,6 +18,9 @@
  *
  */
 
+#ifndef PLUGIN_API_H
+#define PLUGIN_API_H
+
 // This API is meant to be as simplistic as is realistically possible.
 
 /// The version of the API, and by extension, of all the following structs
@@ -92,3 +95,5 @@ struct plugin_info
 	/// The context needs to be passed to the relevant API functions.
 	bool (*initialize) (void *ctx, struct plugin_api *api);
 };
+
+#endif  // ! PLUGIN_API_H
