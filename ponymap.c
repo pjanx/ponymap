@@ -1012,9 +1012,33 @@ transport_tls_init (struct unit *u)
 }
 
 static void
+transport_tls_add_certificate_info (struct unit *u, X509 *cert)
+{
+	char *subject = X509_NAME_oneline (X509_get_subject_name (cert), NULL, 0);
+	char *issuer  = X509_NAME_oneline (X509_get_issuer_name  (cert), NULL, 0);
+
+	str_vector_add_owned (&u->info, xstrdup_printf ("%s: %s",
+		"certificate subject", subject));
+	str_vector_add_owned (&u->info, xstrdup_printf ("%s: %s",
+		"certificate issuer", issuer));
+
+	free (subject);
+	free (issuer);
+}
+
+static void
 transport_tls_cleanup (struct unit *u)
 {
 	struct transport_tls_data *data = u->transport_data;
+	if (u->success)
+	{
+		X509 *cert = SSL_get_peer_certificate (data->ssl);
+		if (cert)
+		{
+			transport_tls_add_certificate_info (u, cert);
+			X509_free (cert);
+		}
+	}
 	SSL_free (data->ssl);
 	free (data);
 }
