@@ -1174,6 +1174,20 @@ struct node_print_data
 	struct node_print_level **tail;     ///< Where to place further levels
 };
 
+static char *
+node_escape_text (const char *text)
+{
+	struct str filtered;
+	str_init (&filtered);
+
+	char c;
+	while ((c = *text++))
+		str_append_c (&filtered,
+			(isascii (c) && (isgraph (c) || c == ' ')) ? c : '.');
+
+	return str_steal (&filtered);
+}
+
 static void
 node_print_tree_level (struct node *self, struct node_print_data *data)
 {
@@ -1191,10 +1205,12 @@ node_print_tree_level (struct node *self, struct node_print_data *data)
 	fputs (indent.str, stdout);
 	str_free (&indent);
 
+	char *escaped = node_escape_text (self->text);
 	self->bold
-		? print_bold (stdout, self->text)
-		: fputs (self->text, stdout);
+		? print_bold (stdout, escaped)
+		: fputs (escaped, stdout);
 	fputc ('\n', stdout);
+	free (escaped);
 
 	struct node_print_level level;
 	level.next = NULL;
