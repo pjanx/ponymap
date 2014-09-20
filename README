@@ -18,6 +18,8 @@ If you don't have Clang, you can edit the Makefile to use GCC or TCC, they work
 just as good.  But there's no CMake support yet, so I force it in the Makefile.
 
  $ git clone https://github.com/pjanouch/ponymap.git
+ $ git submodule init
+ $ git submodule update
  $ make
 
 That is all, no installation is required, or supported for that matter.

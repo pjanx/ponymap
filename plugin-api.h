@@ -50,10 +50,10 @@ struct service
 	// FIXME: the dependency on `struct str' is not very good
 	void (*on_data) (void *handle, struct unit *u, struct str *data);
 
-	// XXX: do we need these at all?  Is there any use for them?
-
 	/// Server has closed the connection
 	void (*on_eof) (void *handle, struct unit *u);
+
+	// XXX: do we need these at all?  Is there any use for them?
 
 	/// Network or other error has occured
 	void (*on_error) (void *handle, struct unit *u);

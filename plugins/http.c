@@ -20,6 +20,7 @@
 
 #include "../utils.c"
 #include "../plugin-api.h"
+#include "../http-parser/http_parser.h"
 
 // --- Service detection -------------------------------------------------------
 
@@ -30,10 +31,69 @@ static struct plugin_data
 }
 g_data;
 
+enum header_state
+{
+	STATE_FIELD,                        ///< We've been parsing a field so far
+	STATE_VALUE                         ///< We've been parsing a value so far
+};
+
 struct scan_data
 {
-	struct str input;                   ///< Input buffer
+	struct unit *u;                     ///< Scan unit
+
+	http_parser parser;                 ///< HTTP parser
+	http_parser_settings settings;      ///< HTTP parser settings
+
+	enum header_state state;            ///< What did we get last time?
+	struct str field;                   ///< Field part buffer
+	struct str value;                   ///< Value part buffer
 };
+
+static void
+on_header_read (struct scan_data *data)
+{
+	if (!strcasecmp (data->field.str, "Server"))
+	{
+		char *info = xstrdup_printf ("%s: %s",
+			"server software", data->value.str);
+		g_data.api->unit_add_info (data->u, info);
+		free (info);
+	}
+}
+
+static int
+on_header_field (http_parser *parser, const char *at, size_t len)
+{
+	struct scan_data *data = parser->data;
+	if (data->state == STATE_VALUE)
+	{
+		on_header_read (data);
+		str_reset (&data->field);
+		str_reset (&data->value);
+	}
+	str_append_data (&data->field, at, len);
+	data->state = STATE_FIELD;
+	return 0;
+}
+
+static int
+on_header_value (http_parser *parser, const char *at, size_t len)
+{
+	struct scan_data *data = parser->data;
+	str_append_data (&data->value, at, len);
+	data->state = STATE_VALUE;
+	return 0;
+}
+
+static int
+on_headers_complete (http_parser *parser)
+{
+	struct scan_data *data = parser->data;
+	// We've got this far, this must be an HTTP server
+	g_data.api->unit_set_success (data->u, true);
+	g_data.api->unit_abort (data->u);
+	return 1;
+}
 
 static void *
 scan_init (struct unit *u)
@@ -46,7 +106,19 @@ scan_init (struct unit *u)
 	str_free (&hello);
 
 	struct scan_data *scan = xcalloc (1, sizeof *scan);
-	str_init (&scan->input);
+	http_parser_init (&scan->parser, HTTP_RESPONSE);
+	scan->parser.data = scan;
+
+	http_parser_settings *s = &scan->settings;
+	s->on_header_field      = on_header_field;
+	s->on_header_value      = on_header_value;
+	s->on_headers_complete  = on_headers_complete;
+
+	scan->state = STATE_FIELD;
+	str_init (&scan->field);
+	str_init (&scan->value);
+
+	scan->u = u;
 	return scan;
 }
 
@@ -54,14 +126,36 @@ static void
 scan_free (void *handle)
 {
 	struct scan_data *scan = handle;
-	str_free (&scan->input);
+	str_free (&scan->field);
+	str_free (&scan->value);
 	free (scan);
 }
 
 static void
 on_data (void *handle, struct unit *u, struct str *data)
 {
-	// TODO: implement a state machine to parse the headers
+	struct scan_data *scan = handle;
+	http_parser *parser = &scan->parser;
+
+	size_t len = data ? data->len : 0;
+	const char *str = data ? data->str : NULL;
+	size_t n_parsed = http_parser_execute (parser, &scan->settings, str, len);
+
+	if (parser->upgrade)
+	{
+		// We should never get here though because `on_headers_complete'
+		// is called first and ends up aborting the unit.
+		g_data.api->unit_add_info (u, "upgrades to a different protocol");
+		g_data.api->unit_abort (u);
+	}
+	else if (n_parsed != len && parser->http_errno != HPE_CB_headers_complete)
+		g_data.api->unit_abort (u);
+}
+
+static void
+on_eof (void *handle, struct unit *u)
+{
+	on_data (handle, u, NULL);
 }
 
 static struct service g_http_service =
@@ -72,7 +166,7 @@ static struct service g_http_service =
 	.scan_init   = scan_init,
 	.scan_free   = scan_free,
 	.on_data     = on_data,
-	.on_eof      = NULL,
+	.on_eof      = on_eof,
 	.on_error    = NULL,
 	.on_aborted  = NULL
 };
