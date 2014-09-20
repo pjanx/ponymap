@@ -1826,7 +1826,7 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv)
 		g_debug_mode = true;
 		break;
 	case 'h':
-		opt_handler_usage (&oh);
+		opt_handler_usage (&oh, stdout);
 		exit (EXIT_SUCCESS);
 	case 'V':
 		printf (PROGRAM_NAME " " PROGRAM_VERSION "\n");
@@ -1864,7 +1864,7 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv)
 		exit (EXIT_SUCCESS);
 	default:
 		print_error ("wrong options");
-		opt_handler_usage (&oh);
+		opt_handler_usage (&oh, stderr);
 		exit (EXIT_FAILURE);
 	}
 
@@ -1873,7 +1873,7 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv)
 
 	if (!argc)
 	{
-		opt_handler_usage (&oh);
+		opt_handler_usage (&oh, stderr);
 		exit (EXIT_FAILURE);
 	}
 

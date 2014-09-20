@@ -12,7 +12,7 @@ to write your own service detection plugins.
 
 Building and Running
 --------------------
-Build dependencies: openssl, clang, pkg-config, GNU make, Jansson
+Build dependencies: openssl, clang, pkg-config, GNU make, help2man, Jansson
 
 If you don't have Clang, you can edit the Makefile to use GCC or TCC, they work
 just as good.  But there's no CMake support yet, so I force it in the Makefile.

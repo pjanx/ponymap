@@ -9,7 +9,7 @@ LDFLAGS = `pkg-config --libs libssl jansson` -lpthread -lrt -ldl -lcurses
 .PHONY: all clean
 .SUFFIXES:
 
-targets = ponymap plugins/http.so plugins/irc.so plugins/ssh.so
+targets = ponymap ponymap.1 plugins/http.so plugins/irc.so plugins/ssh.so
 
 all: $(targets)
 
@@ -18,6 +18,9 @@ clean:
 
 ponymap: ponymap.c utils.c plugin-api.h siphash.c
 	$(CC) ponymap.c siphash.c -o $@ $(CFLAGS) $(LDFLAGS)
+
+ponymap.1: ponymap
+	help2man -No $@ ./$<
 
 plugins/%.so: plugins/%.c utils.c plugin-api.h
 	$(CC) $< -o $@ $(CFLAGS) $(LDFLAGS) -shared -fPIC

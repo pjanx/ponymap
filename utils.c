@@ -1962,7 +1962,7 @@ opt_handler_init (struct opt_handler *self, int argc, char **argv,
 }
 
 static void
-opt_handler_usage (struct opt_handler *self)
+opt_handler_usage (struct opt_handler *self, FILE *stream)
 {
 	struct str usage;
 	str_init (&usage);
@@ -2000,7 +2000,7 @@ opt_handler_usage (struct opt_handler *self)
 		str_free (&row);
 	}
 
-	fputs (usage.str, stderr);
+	fputs (usage.str, stream);
 	str_free (&usage);
 }
 
