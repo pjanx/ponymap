@@ -189,6 +189,7 @@ struct target
 	struct app_context *ctx;            ///< Application context
 
 	uint32_t ip;                        ///< IP address
+	char ip_string[INET_ADDRSTRLEN];    ///< IP address as a string
 	char *hostname;                     ///< Hostname
 
 	/// All units that have ended, successfully finding a service.  These don't
@@ -773,6 +774,12 @@ plugin_api_register_service (void *app_context, struct service *info)
 		str_map_set (&ctx->services, info->name, info);
 }
 
+static const char *
+plugin_api_unit_get_address (struct unit *u)
+{
+	return u->target->ip_string;
+}
+
 static ssize_t
 plugin_api_unit_write (struct unit *u, const void *buf, size_t len)
 {
@@ -804,6 +811,7 @@ plugin_api_unit_abort (struct unit *u)
 static struct plugin_api g_plugin_vtable =
 {
 	.register_service  = plugin_api_register_service,
+	.unit_get_address  = plugin_api_unit_get_address,
 	.unit_write        = plugin_api_unit_write,
 	.unit_set_success  = plugin_api_unit_set_success,
 	.unit_add_info     = plugin_api_unit_add_info,
@@ -1180,7 +1188,7 @@ node_escape_text (const char *text)
 	struct str filtered;
 	str_init (&filtered);
 
-	char c;
+	int c;
 	while ((c = *text++))
 		str_append_c (&filtered,
 			(isascii (c) && (isgraph (c) || c == ' ')) ? c : '.');
@@ -1251,8 +1259,6 @@ node_print_tree (struct node *self)
 
 struct target_dump_data
 {
-	char address[INET_ADDRSTRLEN];      ///< The IP address as a string
-
 	struct unit **results;              ///< Results sorted by service
 	size_t results_len;                 ///< Number of results
 };
@@ -1263,7 +1269,7 @@ target_dump_json (struct target *self, struct target_dump_data *data)
 	json_t *o = json_object ();
 	json_array_append_new (self->ctx->json_results, o);
 
-	json_object_set_new (o, "address", json_string (data->address));
+	json_object_set_new (o, "address", json_string (self->ip_string));
 	if (self->hostname)
 		json_object_set_new (o, "hostname", json_string (self->hostname));
 	if (self->ctx->quitting)
@@ -1310,7 +1316,7 @@ target_dump_terminal (struct target *self, struct target_dump_data *data)
 
 	struct str tmp;
 	str_init (&tmp);
-	str_append (&tmp, data->address);
+	str_append (&tmp, self->ip_string);
 	if (self->hostname)
 		str_append_printf (&tmp, " (%s)", self->hostname);
 	if (self->ctx->quitting)
@@ -1363,13 +1369,6 @@ target_dump_results (struct target *self)
 	struct app_context *ctx = self->ctx;
 	struct target_dump_data data;
 
-	uint32_t address = htonl (self->ip);
-	if (!inet_ntop (AF_INET, &address, data.address, sizeof data.address))
-	{
-		print_error ("%s: %s", "inet_ntop", strerror (errno));
-		return;
-	}
-
 	size_t len = 0;
 	for (struct unit *iter = self->results; iter; iter = iter->next)
 		len++;
@@ -1392,15 +1391,7 @@ target_dump_results (struct target *self)
 static void
 target_update_indicator (struct target *self)
 {
-	char buf[INET_ADDRSTRLEN];
-	uint32_t address = htonl (self->ip);
-	if (!inet_ntop (AF_INET, &address, buf, sizeof buf))
-	{
-		print_error ("%s: %s", "inet_ntop", strerror (errno));
-		return;
-	}
-
-	char *status = xstrdup_printf ("Scanning %s", buf);
+	char *status = xstrdup_printf ("Scanning %s", self->ip_string);
 	struct indicator *indicator = &self->ctx->indicator;
 	if (!indicator->status || strcmp (status, indicator->status))
 		indicator_set_status (&self->ctx->indicator, status);
@@ -1463,6 +1454,14 @@ generator_make_target (struct app_context *ctx)
 	target->ip = g->ip_iter;
 	if (g->ip_iter == g->ip_range_iter->original_address)
 		target->hostname = xstrdup (g->ip_range_iter->original_name);
+
+	uint32_t address = htonl (target->ip);
+	if (!inet_ntop (AF_INET, &address,
+		target->ip_string, sizeof target->ip_string))
+	{
+		print_error ("%s: %s", "inet_ntop", strerror (errno));
+		*target->ip_string = '\0';
+	}
 
 	LIST_APPEND_WITH_TAIL (ctx->running_targets, ctx->running_tail, target);
 	target_update_indicator (ctx->running_targets);
@@ -1908,6 +1907,7 @@ main (int argc, char *argv[])
 	parse_program_arguments (&ctx, argc, argv);
 
 	setup_signal_handlers ();
+	srand (time (NULL));
 
 	// Set the maximum count of file descriptorts to the hard limit
 	struct rlimit limit;

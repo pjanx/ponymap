@@ -44,8 +44,13 @@ struct service
 	/// Destroy the handle created for the scan
 	void (*scan_free) (void *handle);
 
+	// XXX: maybe force the service to store a reference to the unit?
+
 	/// We have received some data from the peer
+	// FIXME: the dependency on `struct str' is not very good
 	void (*on_data) (void *handle, struct unit *u, struct str *data);
+
+	// XXX: do we need these at all?  Is there any use for them?
 
 	/// Server has closed the connection
 	void (*on_eof) (void *handle, struct unit *u);
@@ -61,6 +66,9 @@ struct plugin_api
 {
 	/// Register the plugin for a service
 	void (*register_service) (void *ctx, struct service *info);
+
+	/// Get the IP address of the target as a string
+	const char *(*unit_get_address) (struct unit *u);
 
 	/// Send some data to the peer
 	ssize_t (*unit_write) (struct unit *u, const void *buf, size_t len);

@@ -56,20 +56,25 @@ scan_free (void *handle)
 static void
 on_data (void *handle, struct unit *u, struct str *data)
 {
-	// TODO: don't let the input buffer grow too much
+	// See RFC 4253 -- we check for a valid SSH banner
 	struct scan_data *scan = handle;
-	str_append_str (&scan->input, data);
+	if (scan->input.len + data->len > 255)
+		goto end_scan;
 
+	str_append_str (&scan->input, data);
 	char *input = scan->input.str;
 	char *nl = strstr (input, "\r\n");
 	if (!nl)
 		return;
 
-	// TODO: parse the reply, make sure that it's actually SSH,
-	//   don't put just any garbage in the output info
+	if (strncmp (input, "SSH-", 4))
+		goto end_scan;
+
 	*nl = '\0';
 	g_data.api->unit_add_info (u, input);
 	g_data.api->unit_set_success (u, true);
+
+end_scan:
 	g_data.api->unit_abort (u);
 }
 
