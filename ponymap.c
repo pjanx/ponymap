@@ -229,6 +229,7 @@ struct unit
 	struct poller_timer timeout_event;  ///< Timeout event
 	struct poller_fd fd_event;          ///< FD event
 
+	bool abortion_requested;            ///< Abortion requested by service
 	bool aborted;                       ///< Scan has been aborted
 	bool success;                       ///< Service has been found
 	struct str_vector info;             ///< Info resulting from the scan
@@ -537,9 +538,10 @@ unit_abort (struct unit *u)
 	if (u->success)
 	{
 		// Now we're a part of the target
-		LIST_PREPEND (u->target->results, u);
-		target_unref (u->target);
+		struct target *target = u->target;
+		LIST_PREPEND (target->results, u);
 		u->target = NULL;
+		target_unref (target);
 	}
 	else
 		unit_unref (u);
@@ -562,10 +564,6 @@ on_unit_ready (const struct pollfd *pfd, struct unit *u)
 	struct service *service = u->service;
 	enum transport_io_result result;
 
-	// We hold a reference so that unit_abort(), which may also be
-	// called by handlers within the service, doesn't free the unit.
-	unit_ref (u);
-
 	if ((result = transport->on_readable (u)))
 		goto exception;
 	if (u->read_buffer.len)
@@ -574,15 +572,15 @@ on_unit_ready (const struct pollfd *pfd, struct unit *u)
 		service->on_data (u->service_data, u, buf);
 		str_remove_slice (buf, 0, buf->len);
 
-		if (u->aborted)
-			goto end;
+		if (u->abortion_requested)
+			goto abort;
 	}
 
 	if ((result = transport->on_writeable (u)))
 		goto exception;
-	if (!u->aborted)
-		unit_update_poller (u, pfd);
-	goto end;
+
+	unit_update_poller (u, pfd);
+	return;
 
 exception:
 	if (result == TRANSPORT_IO_EOF)
@@ -596,10 +594,8 @@ exception:
 			service->on_error (u->service_data, u);
 	}
 
+abort:
 	unit_abort (u);
-
-end:
-	unit_unref (u);
 }
 
 static void
@@ -783,7 +779,7 @@ plugin_api_unit_get_address (struct unit *u)
 static ssize_t
 plugin_api_unit_write (struct unit *u, const void *buf, size_t len)
 {
-	if (u->aborted)
+	if (u->abortion_requested || u->aborted)
 		return -1;
 
 	str_append_data (&u->write_buffer, buf, len);
@@ -805,7 +801,7 @@ plugin_api_unit_add_info (struct unit *u, const char *result)
 static void
 plugin_api_unit_abort (struct unit *u)
 {
-	unit_abort (u);
+	u->abortion_requested = true;
 }
 
 static struct plugin_api g_plugin_vtable =

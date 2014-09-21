@@ -217,8 +217,10 @@ static void *
 scan_init (struct unit *u)
 {
 	char nick[IRC_MAX_NICKNAME + 1];
-	for (size_t i = 0; i < sizeof nick - 1; i++)
+	size_t i;
+	for (i = 0; i < sizeof nick - 1; i++)
 		nick[i] = 'a' + rand () % ('z' - 'a' + 1);
+	nick[i] = '\0';
 
 	struct str hello;
 	str_init (&hello);
@@ -267,7 +269,7 @@ on_irc_message (const struct irc_message *msg, const char *raw, void *user_data)
 		if (code == IRC_RPL_MYINFO && msg->params.len > 0)
 		{
 			char *info = xstrdup_printf ("%s: %s",
-				"server name", msg->params.vector[0]);
+				"server name", msg->params.vector[1]);
 			g_data.api->unit_add_info (scan->u, info);
 			free (info);
 
