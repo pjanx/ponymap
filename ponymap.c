@@ -1299,11 +1299,12 @@ target_dump_json (struct target *self, struct target_dump_data *data)
 	json_object_set_new (o, "services", services);
 
 	struct service *last_service = NULL;
+	struct transport *last_transport = NULL;
 	json_t *service, *ports;
 	for (size_t i = 0; i < data->results_len; i++)
 	{
 		struct unit *u = data->results[i];
-		if (u->service != last_service)
+		if (u->service != last_service || u->transport != last_transport)
 		{
 			service = json_object ();
 			ports = json_array ();
@@ -1316,6 +1317,7 @@ target_dump_json (struct target *self, struct target_dump_data *data)
 			json_object_set_new (service, "ports", ports);
 
 			last_service = u->service;
+			last_transport = u->transport;
 		}
 
 		json_t *port = json_object ();
@@ -1346,11 +1348,12 @@ target_dump_terminal (struct target *self, struct target_dump_data *data)
 	root->bold = true;
 
 	struct service *last_service = NULL;
+	struct transport *last_transport = NULL;
 	struct node *service, **s_tail = &root->children, *port, **p_tail;
 	for (size_t i = 0; i < data->results_len; i++)
 	{
 		struct unit *u = data->results[i];
-		if (u->service != last_service)
+		if (u->service != last_service || u->transport != last_transport)
 		{
 			*s_tail = service = node_new (xstrdup_printf ("%s (%s)",
 				u->service->name, u->transport->name));
@@ -1358,6 +1361,7 @@ target_dump_terminal (struct target *self, struct target_dump_data *data)
 			p_tail = &service->children;
 
 			last_service = u->service;
+			last_transport = u->transport;
 		}
 
 		port = *p_tail = node_new (xstrdup_printf ("port %" PRIu16, u->port));
@@ -1379,10 +1383,12 @@ target_dump_terminal (struct target *self, struct target_dump_data *data)
 }
 
 static int
-unit_cmp_by_service (const void *ax, const void *bx)
+unit_cmp_by_group (const void *ax, const void *bx)
 {
-	const struct unit **a = (void *) ax, **b = (void *) bx;
-	return strcmp ((*a)->service->name, (*b)->service->name);
+	const struct unit **ay = (void *) ax, **by = (void *) bx;
+	const struct unit *a = *ay, *b = *by;
+	int x = strcmp (a->service->name, b->service->name);
+	return x ? x : strcmp (a->transport->name, b->transport->name);
 }
 
 static void
@@ -1403,7 +1409,7 @@ target_dump_results (struct target *self)
 		sorted[--len] = iter;
 
 	// Sort them by service name so that they can be grouped
-	qsort (sorted, N_ELEMENTS (sorted), sizeof *sorted, unit_cmp_by_service);
+	qsort (sorted, N_ELEMENTS (sorted), sizeof *sorted, unit_cmp_by_group);
 
 	if (ctx->json_results)
 		target_dump_json (self, &data);
