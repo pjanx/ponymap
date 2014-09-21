@@ -1379,8 +1379,8 @@ target_dump_terminal (struct target *self, struct target_dump_data *data)
 static int
 unit_cmp_by_service (const void *ax, const void *bx)
 {
-	const struct unit *a = ax, *b = bx;
-	return strcmp (a->service->name, b->service->name);
+	const struct unit **a = (void *) ax, **b = (void *) bx;
+	return strcmp ((*a)->service->name, (*b)->service->name);
 }
 
 static void
