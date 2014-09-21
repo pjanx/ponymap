@@ -334,6 +334,9 @@ struct app_context
 	struct generator generator;         ///< Unit generator
 	struct indicator indicator;         ///< Status indicator
 
+	size_t stats_hosts;                 ///< How many hosts we've scanned
+	size_t stats_results;               ///< How many services we've found
+
 	// We need this list ordered from the oldest running target,
 	// therefore we track the tail to allow O(1) appends.
 
@@ -537,8 +540,10 @@ unit_abort (struct unit *u)
 
 	if (u->success)
 	{
-		// Now we're a part of the target
 		struct target *target = u->target;
+		target->ctx->stats_results++;
+
+		// Now we're a part of the target
 		LIST_PREPEND (target->results, u);
 		u->target = NULL;
 		target_unref (target);
@@ -1494,6 +1499,8 @@ generator_make_target (struct app_context *ctx)
 
 	LIST_APPEND_WITH_TAIL (ctx->running_targets, ctx->running_tail, target);
 	target_update_indicator (ctx->running_targets);
+
+	ctx->stats_hosts++;
 }
 
 static void
@@ -2016,6 +2023,10 @@ main (int argc, char *argv[])
 	ctx.polling = true;
 	while (ctx.polling)
 		poller_run (&ctx.poller);
+
+	printf ("Scanned %zu %s, identified %zu %s\n",
+		ctx.stats_hosts,   ctx.stats_hosts   == 1 ? "host"    : "hosts",
+		ctx.stats_results, ctx.stats_results == 1 ? "service" : "services");
 
 	if (ctx.json_results && json_dump_file (ctx.json_results,
 		ctx.json_filename, JSON_INDENT (2) | JSON_SORT_KEYS | JSON_ENCODE_ANY))
