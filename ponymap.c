@@ -1356,6 +1356,8 @@ target_dump_terminal (struct target *self, struct target_dump_data *data)
 				u->service->name, u->transport->name));
 			s_tail = &service->next;
 			p_tail = &service->children;
+
+			last_service = u->service;
 		}
 
 		port = *p_tail = node_new (xstrdup_printf ("port %" PRIu16, u->port));
