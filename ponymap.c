@@ -1003,6 +1003,7 @@ transport_tls_init (struct unit *u)
 
 	struct transport_tls_data *data = xcalloc (1, sizeof *data);
 	data->ssl = ssl;
+	// XXX: maybe set `ssl_rx_want_tx' to force a handshake?
 	u->transport_data = data;
 	return true;
 }
@@ -1063,10 +1064,10 @@ transport_tls_on_readable (struct unit *u)
 		case SSL_ERROR_ZERO_RETURN:
 			return TRANSPORT_IO_EOF;
 		case SSL_ERROR_WANT_READ:
-			return true;
+			return TRANSPORT_IO_OK;
 		case SSL_ERROR_WANT_WRITE:
 			data->ssl_rx_want_tx = true;
-			return true;
+			return TRANSPORT_IO_OK;
 		case XSSL_ERROR_TRY_AGAIN:
 			continue;
 		default:
