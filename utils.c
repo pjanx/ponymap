@@ -851,6 +851,7 @@ xclose (int fd)
 
 typedef void (*poller_fd_fn) (const struct pollfd *, void *);
 typedef void (*poller_timer_fn) (void *);
+typedef void (*poller_idle_fn) (void *);
 
 #define POLLER_MIN_ALLOC 16
 
@@ -874,6 +875,16 @@ struct poller_fd
 	short events;                       ///< The poll() events we registered for
 
 	poller_fd_fn dispatcher;            ///< Event dispatcher
+	void *user_data;                    ///< User data
+};
+
+struct poller_idle
+{
+	LIST_HEADER (poller_idle)
+	struct poller *poller;              ///< Our poller
+	bool active;                        ///< Whether we're on the list
+
+	poller_idle_fn dispatcher;          ///< Event dispatcher
 	void *user_data;                    ///< User data
 };
 
@@ -1023,6 +1034,19 @@ poller_timers_get_poll_timeout (struct poller_timers *self)
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+static void
+poller_idle_dispatch (struct poller_idle *list)
+{
+	struct poller_idle *iter, *next;
+	for (iter = list; iter; iter = next)
+	{
+		next = iter->next;
+		iter->dispatcher (iter->user_data);
+	}
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
 #ifdef __linux__
 #include <sys/epoll.h>
 
@@ -1035,6 +1059,7 @@ struct poller
 	size_t alloc;                       ///< Number of entries allocated
 
 	struct poller_timers timers;        ///< Timeouts
+	struct poller_idle *idle;           ///< Idle events
 
 	/// Index of the element in `revents' that's about to be dispatched next.
 	int dispatch_next;
@@ -1181,7 +1206,7 @@ poller_run (struct poller *self)
 	int n_fds;
 	do
 		n_fds = epoll_wait (self->epoll_fd, self->revents, self->len,
-			poller_timers_get_poll_timeout (&self->timers));
+			self->idle ? 0 : poller_timers_get_poll_timeout (&self->timers));
 	while (n_fds == -1 && errno == EINTR);
 
 	if (n_fds == -1)
@@ -1191,6 +1216,7 @@ poller_run (struct poller *self)
 	self->dispatch_total = n_fds;
 
 	poller_timers_dispatch (&self->timers);
+	poller_idle_dispatch (self->idle);
 
 	while (self->dispatch_next < self->dispatch_total)
 	{
@@ -1220,6 +1246,7 @@ struct poller
 	size_t alloc;                       ///< Number of entries allocated
 
 	struct poller_timers timers;        ///< Timers
+	struct poller_idle *idle;           ///< Idle events
 	int dispatch_next;                  ///< The next dispatched FD or -1
 };
 
@@ -1309,13 +1336,14 @@ poller_run (struct poller *self)
 	int result;
 	do
 		result = poll (self->fds, self->len,
-			poller_timers_get_poll_timeout (&self->timers));
+			self->idle ? 0 : poller_timers_get_poll_timeout (&self->timers));
 	while (result == -1 && errno == EINTR);
 
 	if (result == -1)
 		exit_fatal ("%s: %s", "poll", strerror (errno));
 
 	poller_timers_dispatch (&self->timers);
+	poller_idle_dispatch (self->idle);
 
 	for (int i = 0; i < (int) self->len; )
 	{
@@ -1354,6 +1382,37 @@ poller_timer_reset (struct poller_timer *self)
 {
 	if (self->index != -1)
 		poller_timers_remove_at_index (self->timers, self->index);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+static void
+poller_idle_init (struct poller_idle *self, struct poller *poller)
+{
+	memset (self, 0, sizeof *self);
+	self->poller = poller;
+}
+
+static void
+poller_idle_set (struct poller_idle *self)
+{
+	if (self->active)
+		return;
+
+	LIST_PREPEND (self->poller->idle, self);
+	self->active = true;
+}
+
+static void
+poller_idle_reset (struct poller_idle *self)
+{
+	if (!self->active)
+		return;
+
+	LIST_UNLINK (self->poller->idle, self);
+	self->prev = NULL;
+	self->next = NULL;
+	self->active = false;
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
