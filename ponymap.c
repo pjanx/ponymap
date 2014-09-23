@@ -312,6 +312,7 @@ struct generator
 };
 
 static bool generator_step (struct app_context *ctx);
+static void on_generator_step_requested (struct app_context *ctx);
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -345,6 +346,7 @@ struct app_context
 	struct target *running_tail;        ///< The tail link of `running_targets'
 
 	struct poller poller;               ///< Manages polled descriptors
+	struct poller_idle step_event;      ///< Idle event to make more units
 	bool quitting;                      ///< User requested quitting
 	bool polling;                       ///< The event loop is running
 };
@@ -369,6 +371,10 @@ app_context_init (struct app_context *self)
 	poller_init (&self->poller);
 	self->quitting = false;
 	self->polling = false;
+
+	poller_idle_init (&self->step_event, &self->poller);
+	self->step_event.dispatcher = (poller_idle_fn) on_generator_step_requested;
+	self->step_event.user_data = self;
 }
 
 static void
@@ -538,9 +544,9 @@ unit_abort (struct unit *u)
 	// We're no longer running
 	LIST_UNLINK (u->target->running_units, u);
 
-	// We might have made it possible to launch new units
-	while (generator_step (u->target->ctx))
-		;
+	// We might have made it possible to launch new units; we cannot run
+	// the generator right now, though, as we could spin in a long loop
+	poller_idle_set (&u->target->ctx->step_event);
 
 	if (u->success)
 	{
@@ -1605,6 +1611,14 @@ generator_step (struct app_context *ctx)
 
 	// No more jobs to be created
 	return false;
+}
+
+static void
+on_generator_step_requested (struct app_context *ctx)
+{
+	poller_idle_reset (&ctx->step_event);
+	while (generator_step (ctx))
+		;
 }
 
 // --- Signals -----------------------------------------------------------------
