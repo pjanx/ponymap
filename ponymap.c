@@ -518,7 +518,7 @@ unit_abort (struct unit *u)
 	if (u->scan_started)
 	{
 		if (u->service->on_aborted)
-			u->service->on_aborted (u->service_data, u);
+			u->service->on_aborted (u->service_data);
 		u->service->scan_free (u->service_data);
 	}
 
@@ -581,7 +581,7 @@ on_unit_ready (const struct pollfd *pfd, struct unit *u)
 	if (u->read_buffer.len)
 	{
 		struct str *buf = &u->read_buffer;
-		service->on_data (u->service_data, u, buf);
+		service->on_data (u->service_data, buf->str, buf->len);
 		str_remove_slice (buf, 0, buf->len);
 
 		if (u->abortion_requested)
@@ -595,7 +595,7 @@ on_unit_ready (const struct pollfd *pfd, struct unit *u)
 	if (got_eof)
 	{
 		if (service->on_eof)
-			service->on_eof (u->service_data, u);
+			service->on_eof (u->service_data);
 		if (u->abortion_requested || !u->write_buffer.len)
 			goto abort;
 	}
@@ -605,7 +605,7 @@ on_unit_ready (const struct pollfd *pfd, struct unit *u)
 
 error:
 	if (service->on_error)
-		service->on_error (u->service_data, u);
+		service->on_error (u->service_data);
 
 abort:
 	unit_abort (u);

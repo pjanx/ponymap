@@ -48,13 +48,13 @@ struct scan_data
 };
 
 static void
-on_header_read (struct scan_data *data)
+on_header_read (struct scan_data *scan)
 {
-	if (!strcasecmp (data->field.str, "Server"))
+	if (!strcasecmp (scan->field.str, "Server"))
 	{
 		char *info = xstrdup_printf ("%s: %s",
-			"server software", data->value.str);
-		g_data.api->unit_add_info (data->u, info);
+			"server software", scan->value.str);
+		g_data.api->unit_add_info (scan->u, info);
 		free (info);
 	}
 }
@@ -62,15 +62,15 @@ on_header_read (struct scan_data *data)
 static int
 on_header_field (http_parser *parser, const char *at, size_t len)
 {
-	struct scan_data *data = parser->data;
-	if (data->state == STATE_VALUE)
+	struct scan_data *scan = parser->data;
+	if (scan->state == STATE_VALUE)
 	{
-		on_header_read (data);
-		str_reset (&data->field);
-		str_reset (&data->value);
+		on_header_read (scan);
+		str_reset (&scan->field);
+		str_reset (&scan->value);
 	}
-	str_append_data (&data->field, at, len);
-	data->state = STATE_FIELD;
+	str_append_data (&scan->field, at, len);
+	scan->state = STATE_FIELD;
 	return 0;
 }
 
@@ -86,10 +86,10 @@ on_header_value (http_parser *parser, const char *at, size_t len)
 static int
 on_headers_complete (http_parser *parser)
 {
-	struct scan_data *data = parser->data;
+	struct scan_data *scan = parser->data;
 	// We've got this far, this must be an HTTP server
-	g_data.api->unit_set_success (data->u, true);
-	g_data.api->unit_abort (data->u);
+	g_data.api->unit_set_success (scan->u, true);
+	g_data.api->unit_abort (scan->u);
 	return 1;
 }
 
@@ -125,7 +125,7 @@ scan_free (void *handle)
 }
 
 static void
-on_data (void *handle, struct unit *u, struct str *data)
+on_data (void *handle, const void *data, size_t len)
 {
 	static const http_parser_settings http_settings =
 	{
@@ -136,26 +136,23 @@ on_data (void *handle, struct unit *u, struct str *data)
 
 	struct scan_data *scan = handle;
 	http_parser *parser = &scan->parser;
-
-	size_t len = data ? data->len : 0;
-	const char *str = data ? data->str : NULL;
-	size_t n_parsed = http_parser_execute (parser, &http_settings, str, len);
+	size_t n_parsed = http_parser_execute (parser, &http_settings, data, len);
 
 	if (parser->upgrade)
 	{
 		// We should never get here though because `on_headers_complete'
 		// is called first and ends up aborting the unit.
-		g_data.api->unit_add_info (u, "upgrades to a different protocol");
-		g_data.api->unit_abort (u);
+		g_data.api->unit_add_info (scan->u, "upgrades to a different protocol");
+		g_data.api->unit_abort (scan->u);
 	}
 	else if (n_parsed != len && parser->http_errno != HPE_CB_headers_complete)
-		g_data.api->unit_abort (u);
+		g_data.api->unit_abort (scan->u);
 }
 
 static void
-on_eof (void *handle, struct unit *u)
+on_eof (void *handle)
 {
-	on_data (handle, u, NULL);
+	on_data (handle, NULL, 0);
 }
 
 static struct service g_http_service =

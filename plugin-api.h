@@ -47,22 +47,19 @@ struct service
 	/// Destroy the handle created for the scan
 	void (*scan_free) (void *handle);
 
-	// XXX: maybe force the service to store a reference to the unit?
-
 	/// We have received some data from the peer
-	// FIXME: the dependency on `struct str' is not very good
-	void (*on_data) (void *handle, struct unit *u, struct str *data);
+	void (*on_data) (void *handle, const void *data, size_t len);
 
 	/// Server has closed the connection
-	void (*on_eof) (void *handle, struct unit *u);
+	void (*on_eof) (void *handle);
 
 	// XXX: do we need these at all?  Is there any use for them?
 
 	/// Network or other error has occured
-	void (*on_error) (void *handle, struct unit *u);
+	void (*on_error) (void *handle);
 
 	/// The scan has been aborted
-	void (*on_aborted) (void *handle, struct unit *u);
+	void (*on_aborted) (void *handle);
 };
 
 struct plugin_api

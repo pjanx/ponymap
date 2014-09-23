@@ -32,16 +32,16 @@ g_data;
 
 struct scan_data
 {
+	struct unit *u;                     ///< Scan unit
 	struct str input;                   ///< Input buffer
 };
 
 static void *
 scan_init (struct unit *u)
 {
-	(void) u;
-
 	struct scan_data *scan = xcalloc (1, sizeof *scan);
 	str_init (&scan->input);
+	scan->u = u;
 	return scan;
 }
 
@@ -54,14 +54,14 @@ scan_free (void *handle)
 }
 
 static void
-on_data (void *handle, struct unit *u, struct str *data)
+on_data (void *handle, const void *data, size_t len)
 {
 	// See RFC 4253 -- we check for a valid SSH banner
 	struct scan_data *scan = handle;
-	if (scan->input.len + data->len > 255)
+	if (scan->input.len + len > 255)
 		goto end_scan;
 
-	str_append_str (&scan->input, data);
+	str_append_data (&scan->input, data, len);
 	char *input = scan->input.str;
 	char *nl = strstr (input, "\r\n");
 	if (!nl)
@@ -71,11 +71,11 @@ on_data (void *handle, struct unit *u, struct str *data)
 		goto end_scan;
 
 	*nl = '\0';
-	g_data.api->unit_add_info (u, input);
-	g_data.api->unit_set_success (u, true);
+	g_data.api->unit_add_info (scan->u, input);
+	g_data.api->unit_set_success (scan->u, true);
 
 end_scan:
-	g_data.api->unit_abort (u);
+	g_data.api->unit_abort (scan->u);
 }
 
 static struct service g_ssh_service =

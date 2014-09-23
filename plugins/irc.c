@@ -279,12 +279,10 @@ on_irc_message (const struct irc_message *msg, const char *raw, void *user_data)
 }
 
 static void
-on_data (void *handle, struct unit *u, struct str *data)
+on_data (void *handle, const void *data, size_t len)
 {
-	(void) u;
-
 	struct scan_data *scan = handle;
-	str_append_str (&scan->input, data);
+	str_append_data (&scan->input, data, len);
 	irc_process_buffer (&scan->input, on_irc_message, scan);
 }
 
