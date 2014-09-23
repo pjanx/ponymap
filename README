@@ -11,6 +11,10 @@ of running services of a kind.  It should be simple and straight-forward to
 either write your own service detection plugins, provided that you're familiar
 with writing asynchronous code, or to make changes to the existing ones.
 
+So far there are some problems with reliability, and some clever algorithm to
+avoid overloading the network is needed.  Until then, you can use ulimit to cap
+the maximum number of concurrent connections.
+
 Building and Running
 --------------------
 Build dependencies: openssl, clang, pkg-config, GNU make, help2man, Jansson
@@ -31,6 +35,12 @@ First you might want to generate a configuration file:
 After making any necessary edits to the file (there are comments to aid you in
 doing that), simply run the appropriate program with no arguments to retrieve
 a usage text.
+
+Author's Notes
+--------------
+This was quite an interesting project to write and it has taught me a lot about
+event loops.  It would be relatively simple to plug in libuv if more robustness
+and portability is needed, though.
 
 License
 -------
