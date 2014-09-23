@@ -565,12 +565,15 @@ unit_update_poller (struct unit *u, const struct pollfd *pfd)
 static void
 on_unit_ready (const struct pollfd *pfd, struct unit *u)
 {
-	struct transport *transport = u->transport;
 	struct service *service = u->service;
+	struct transport *transport = u->transport;
 	enum transport_io_result result;
+	bool got_eof = false;
 
-	if ((result = transport->on_readable (u)))
-		goto exception;
+	if ((result = transport->on_readable (u)) == TRANSPORT_IO_ERROR)
+		goto error;
+	got_eof |= result == TRANSPORT_IO_EOF;
+
 	if (u->read_buffer.len)
 	{
 		struct str *buf = &u->read_buffer;
@@ -581,23 +584,24 @@ on_unit_ready (const struct pollfd *pfd, struct unit *u)
 			goto abort;
 	}
 
-	if ((result = transport->on_writeable (u)))
-		goto exception;
+	if ((result = transport->on_writeable (u)) == TRANSPORT_IO_ERROR)
+		goto error;
+	got_eof |= result == TRANSPORT_IO_EOF;
+
+	if (got_eof)
+	{
+		if (service->on_eof)
+			service->on_eof (u->service_data, u);
+		if (u->abortion_requested || !u->write_buffer.len)
+			goto abort;
+	}
 
 	unit_update_poller (u, pfd);
 	return;
 
-exception:
-	if (result == TRANSPORT_IO_EOF)
-	{
-		if (service->on_eof)
-			service->on_eof (u->service_data, u);
-	}
-	else if (result == TRANSPORT_IO_ERROR)
-	{
-		if (service->on_error)
-			service->on_error (u->service_data, u);
-	}
+error:
+	if (service->on_error)
+		service->on_error (u->service_data, u);
 
 abort:
 	unit_abort (u);
