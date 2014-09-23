@@ -449,7 +449,7 @@ str_ensure_space (struct str *self, size_t n)
 }
 
 static void
-str_append_data (struct str *self, const char *data, size_t n)
+str_append_data (struct str *self, const void *data, size_t n)
 {
 	str_ensure_space (self, n);
 	memcpy (self->str + self->len, data, n);
