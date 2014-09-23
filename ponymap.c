@@ -229,6 +229,7 @@ struct unit
 	struct poller_timer timeout_event;  ///< Timeout event
 	struct poller_fd fd_event;          ///< FD event
 
+	bool scan_started;                  ///< Whether the scan has been started
 	bool abortion_requested;            ///< Abortion requested by service
 	bool aborted;                       ///< Scan has been aborted
 	bool success;                       ///< Service has been found
@@ -514,11 +515,14 @@ unit_abort (struct unit *u)
 		return;
 
 	u->aborted = true;
-	if (u->service->on_aborted)
-		u->service->on_aborted (u->service_data, u);
+	if (u->scan_started)
+	{
+		if (u->service->on_aborted)
+			u->service->on_aborted (u->service_data, u);
+		u->service->scan_free (u->service_data);
+	}
 
 	u->transport->cleanup (u);
-	u->service->scan_free (u->service_data);
 	xclose (u->socket_fd);
 
 	poller_timer_reset (&u->timeout_event);
@@ -610,7 +614,10 @@ abort:
 static void
 unit_start_scan (struct unit *u)
 {
+	u->scan_started = true;
 	poller_timer_set (&u->timeout_event, u->target->ctx->scan_timeout * 1000);
+
+	u->service_data = u->service->scan_init (u);
 	u->fd_event.dispatcher = (poller_fd_fn) on_unit_ready;
 	unit_update_poller (u, NULL);
 }
@@ -671,7 +678,6 @@ unit_new (struct target *target, int socket_fd, uint16_t port,
 	u->fd_event.dispatcher = (poller_fd_fn) on_unit_connected;
 	u->fd_event.user_data = u;
 
-	u->service_data = service->scan_init (u);
 	LIST_PREPEND (target->running_units, u);
 	return u;
 }
