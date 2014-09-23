@@ -1161,22 +1161,29 @@ poller_set (struct poller *self, struct poller_fd *fd)
 		modifying ? EPOLL_CTL_MOD : EPOLL_CTL_ADD, fd->fd, &event) != -1);
 }
 
-// FIXME: this is by far the slowest function in the whole program
+static int
+poller_compare_fds (const void *ax, const void *bx)
+{
+	const struct epoll_event *ay = ax, *by = bx;
+	struct poller_fd *a = ay->data.ptr, *b = by->data.ptr;
+	return a->fd - b->fd;
+}
+
 static void
 poller_remove_from_dispatch (struct poller *self, const struct poller_fd *fd)
 {
 	if (!self->dispatch_total)
 		return;
 
-	int i;
-	for (i = self->dispatch_next; i < self->dispatch_total; i++)
-		if (self->revents[i].data.ptr == fd)
-			break;
-	if (i == self->dispatch_total)
+	struct epoll_event key = { .data.ptr = (void *) fd }, *fd_event;
+	if (!(fd_event = bsearch (&key, self->revents,
+		self->dispatch_total, sizeof *self->revents, poller_compare_fds)))
 		return;
 
-	if (i != --self->dispatch_total)
-		self->revents[i] = self->revents[self->dispatch_total];
+	ssize_t i = fd_event - self->revents;
+	if (i < self->dispatch_next)
+		self->dispatch_next--;
+	memmove (fd_event, fd_event + 1, (--self->dispatch_total - i) * sizeof key);
 }
 
 static void
@@ -1218,6 +1225,9 @@ poller_run (struct poller *self)
 
 	poller_timers_dispatch (&self->timers);
 	poller_idle_dispatch (self->idle);
+
+	// Sort them by file descriptor number for binary search
+	qsort (self->revents, n_fds, sizeof *self->revents, poller_compare_fds);
 
 	while (self->dispatch_next < self->dispatch_total)
 	{
