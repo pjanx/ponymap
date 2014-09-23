@@ -1161,6 +1161,7 @@ poller_set (struct poller *self, struct poller_fd *fd)
 		modifying ? EPOLL_CTL_MOD : EPOLL_CTL_ADD, fd->fd, &event) != -1);
 }
 
+// FIXME: this is by far the slowest function in the whole program
 static void
 poller_remove_from_dispatch (struct poller *self, const struct poller_fd *fd)
 {

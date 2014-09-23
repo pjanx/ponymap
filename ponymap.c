@@ -2038,8 +2038,6 @@ main (int argc, char *argv[])
 	merge_ip_ranges (&ctx);
 
 	// Initate the scan: generate as many units as possible
-	// FIXME: this appears to be quite slow: either make it run faster,
-	//   or limit the number of units spawned at a time
 	generator_init (&ctx);
 	while (generator_step (&ctx))
 		;
