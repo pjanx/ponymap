@@ -1335,7 +1335,7 @@ poller_run (struct poller *self)
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static void
-poller_timer_init(struct poller_timer *self, struct poller *poller)
+poller_timer_init (struct poller_timer *self, struct poller *poller)
 {
 	memset (self, 0, sizeof *self);
 	self->timers = &poller->timers;
@@ -1343,14 +1343,14 @@ poller_timer_init(struct poller_timer *self, struct poller *poller)
 }
 
 static void
-poller_timer_set(struct poller_timer *self, int timeout_ms)
+poller_timer_set (struct poller_timer *self, int timeout_ms)
 {
 	self->when = poller_timers_get_current_time () + timeout_ms;
 	poller_timers_set (self->timers, self);
 }
 
 static void
-poller_timer_reset(struct poller_timer *self)
+poller_timer_reset (struct poller_timer *self)
 {
 	if (self->index != -1)
 		poller_timers_remove_at_index (self->timers, self->index);
@@ -1359,7 +1359,7 @@ poller_timer_reset(struct poller_timer *self)
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static void
-poller_fd_init(struct poller_fd *self, struct poller *poller, int fd)
+poller_fd_init (struct poller_fd *self, struct poller *poller, int fd)
 {
 	memset (self, 0, sizeof *self);
 	self->poller = poller;
@@ -1368,14 +1368,14 @@ poller_fd_init(struct poller_fd *self, struct poller *poller, int fd)
 }
 
 static void
-poller_fd_set(struct poller_fd *self, short events)
+poller_fd_set (struct poller_fd *self, short events)
 {
 	self->events = events;
 	poller_set (self->poller, self);
 }
 
 static void
-poller_fd_reset(struct poller_fd *self)
+poller_fd_reset (struct poller_fd *self)
 {
 	if (self->index != -1)
 		poller_remove_at_index (self->poller, self->index);
