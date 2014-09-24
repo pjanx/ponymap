@@ -883,6 +883,7 @@ struct poller_idle
 {
 	LIST_HEADER (poller_idle)
 	struct poller *poller;              ///< Our poller
+
 	bool active;                        ///< Whether we're on the list
 
 	poller_idle_fn dispatcher;          ///< Event dispatcher

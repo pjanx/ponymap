@@ -214,8 +214,6 @@ struct unit
 	size_t ref_count;                   ///< Reference count
 	struct target *target;              ///< Target context
 
-	uint16_t port;                      ///< The scanned port
-
 	struct service *service;            ///< Service
 	void *service_data;                 ///< User data for service
 
@@ -223,17 +221,18 @@ struct unit
 	void *transport_data;               ///< User data for transport
 
 	int socket_fd;                      ///< The TCP socket
+	uint16_t port;                      ///< The scanned port
 	struct str read_buffer;             ///< Unprocessed input
 	struct str write_buffer;            ///< Output yet to be sent out
 
 	struct poller_timer timeout_event;  ///< Timeout event
 	struct poller_fd fd_event;          ///< FD event
 
+	struct str_vector info;             ///< Info resulting from the scan
 	bool scan_started;                  ///< Whether the scan has been started
 	bool abortion_requested;            ///< Abortion requested by service
 	bool aborted;                       ///< Scan has been aborted
 	bool success;                       ///< Service has been found
-	struct str_vector info;             ///< Info resulting from the scan
 };
 
 static struct unit *unit_ref (struct unit *self);
@@ -278,12 +277,12 @@ struct indicator
 {
 	struct poller_timer timer;          ///< The animation timer
 
-	unsigned position;                  ///< The current animation character
 	const char *frames;                 ///< All the characters
 	size_t frames_len;                  ///< The number of characters
 
-	bool shown;                         ///< The indicator is shown on screen
 	char *status;                       ///< The status text
+	unsigned position;                  ///< The current animation character
+	bool shown;                         ///< The indicator is shown on screen
 };
 
 static void indicator_init (struct indicator *self, struct poller *poller);
@@ -298,11 +297,11 @@ indicator_free (struct indicator *self)
 
 struct generator
 {
-	struct ip_range *ip_range_iter;     ///< Current IP range
-	uint32_t ip_iter;                   ///< IP iterator within the range
 	struct target *current_target;      ///< Current target
 
+	struct ip_range *ip_range_iter;     ///< Current IP range
 	struct port_range *port_range_iter; ///< Current port range
+	uint32_t ip_iter;                   ///< IP iterator within the range
 	uint16_t port_iter;                 ///< Port iterator within the range
 
 	struct str_map_iter svc_iter;       ///< Service iterator
