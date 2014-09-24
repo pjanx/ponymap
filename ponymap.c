@@ -534,7 +534,7 @@ unit_abort (struct unit *u)
 	poller_timer_reset (&u->timeout_event);
 
 	// This way we avoid a syscall with epoll
-	u->fd_event.fd = -1;
+	u->fd_event.closed = true;
 	poller_fd_reset (&u->fd_event);
 
 	u->transport_data = NULL;

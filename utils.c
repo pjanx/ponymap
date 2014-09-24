@@ -873,6 +873,7 @@ struct poller_fd
 
 	int fd;                             ///< Our file descriptor
 	short events;                       ///< The poll() events we registered for
+	bool closed;                        ///< Whether fd has been closed already
 
 	poller_fd_fn dispatcher;            ///< Event dispatcher
 	void *user_data;                    ///< User data
@@ -1194,7 +1195,7 @@ poller_remove_at_index (struct poller *self, size_t index)
 	fd->index = -1;
 
 	poller_remove_from_dispatch (self, fd);
-	if (fd->fd != -1)
+	if (!fd->closed)
 		hard_assert (epoll_ctl (self->epoll_fd,
 			EPOLL_CTL_DEL, fd->fd, (void *) "") != -1);
 
