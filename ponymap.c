@@ -471,6 +471,7 @@ indicator_hide (struct indicator *self)
 	tputs (clr_eol, 1, putchar);
 	fflush (stdout);
 
+	self->shown = false;
 	poller_timer_reset (&self->timer);
 }
 
