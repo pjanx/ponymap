@@ -1405,12 +1405,14 @@ target_dump_terminal (struct target *self, struct target_dump_data *data)
 }
 
 static int
-unit_cmp_by_group (const void *ax, const void *bx)
+unit_cmp_by_order (const void *ax, const void *bx)
 {
 	const struct unit **ay = (void *) ax, **by = (void *) bx;
 	const struct unit *a = *ay, *b = *by;
 	int x = strcmp (a->service->name, b->service->name);
-	return x ? x : strcmp (a->transport->name, b->transport->name);
+	if (!x) x = strcmp (a->transport->name, b->transport->name);
+	if (!x) x = (int) a->port - (int) b->port;
+	return x;
 }
 
 static void
@@ -1431,7 +1433,7 @@ target_dump_results (struct target *self)
 		sorted[--len] = iter;
 
 	// Sort them by service name so that they can be grouped
-	qsort (sorted, N_ELEMENTS (sorted), sizeof *sorted, unit_cmp_by_group);
+	qsort (sorted, N_ELEMENTS (sorted), sizeof *sorted, unit_cmp_by_order);
 
 	if (ctx->json_results)
 		target_dump_json (self, &data);
