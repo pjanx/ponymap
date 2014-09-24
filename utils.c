@@ -1063,11 +1063,7 @@ struct poller
 	struct poller_timers timers;        ///< Timeouts
 	struct poller_idle *idle;           ///< Idle events
 
-	/// Index of the element in `revents' that's about to be dispatched next.
-	int dispatch_next;
-
-	/// The total number of entries stored in `revents' by epoll_wait().
-	int dispatch_total;
+	int revents_len;                    ///< Number of entries in `revents'
 };
 
 static void
@@ -1081,11 +1077,9 @@ poller_init (struct poller *self)
 	self->alloc = POLLER_MIN_ALLOC;
 	self->fds = xcalloc (self->alloc, sizeof *self->fds);
 	self->revents = xcalloc (self->alloc, sizeof *self->revents);
+	self->revents_len = 0;
 
 	poller_timers_init (&self->timers);
-
-	self->dispatch_next = 0;
-	self->dispatch_total = 0;
 }
 
 static void
@@ -1174,18 +1168,13 @@ poller_compare_fds (const void *ax, const void *bx)
 static void
 poller_remove_from_dispatch (struct poller *self, const struct poller_fd *fd)
 {
-	if (!self->dispatch_total)
+	if (!self->revents_len)
 		return;
 
 	struct epoll_event key = { .data.ptr = (void *) fd }, *fd_event;
-	if (!(fd_event = bsearch (&key, self->revents,
-		self->dispatch_total, sizeof *self->revents, poller_compare_fds)))
-		return;
-
-	ssize_t i = fd_event - self->revents;
-	if (i < self->dispatch_next)
-		self->dispatch_next--;
-	memmove (fd_event, fd_event + 1, (--self->dispatch_total - i) * sizeof key);
+	if ((fd_event = bsearch (&key, self->revents,
+		self->revents_len, sizeof *self->revents, poller_compare_fds)))
+		fd_event->events = -1;
 }
 
 static void
@@ -1211,7 +1200,7 @@ static void
 poller_run (struct poller *self)
 {
 	// Not reentrant
-	hard_assert (!self->dispatch_total);
+	hard_assert (!self->revents_len);
 
 	int n_fds;
 	do
@@ -1222,31 +1211,29 @@ poller_run (struct poller *self)
 	if (n_fds == -1)
 		exit_fatal ("%s: %s", "epoll", strerror (errno));
 
-	self->dispatch_next = 0;
-	self->dispatch_total = n_fds;
-
 	// Sort them by file descriptor number for binary search
 	qsort (self->revents, n_fds, sizeof *self->revents, poller_compare_fds);
+	self->revents_len = n_fds;
 
 	poller_timers_dispatch (&self->timers);
 	poller_idle_dispatch (self->idle);
 
-	while (self->dispatch_next < self->dispatch_total)
+	for (int i = 0; i < n_fds; i++)
 	{
-		struct epoll_event *revents = self->revents + self->dispatch_next;
-		struct poller_fd *fd = revents->data.ptr;
+		struct epoll_event *revents = self->revents + i;
+		if (revents->events == (uint32_t) -1)
+			continue;
 
+		struct poller_fd *fd = revents->data.ptr;
 		struct pollfd pfd;
 		pfd.fd = fd->fd;
 		pfd.revents = poller_epoll_to_poll_events (revents->events);
 		pfd.events = fd->events;
 
-		self->dispatch_next++;
 		fd->dispatcher (&pfd, fd->user_data);
 	}
 
-	self->dispatch_next = 0;
-	self->dispatch_total = 0;
+	self->revents_len = 0;
 }
 
 #else  // !__linux__
