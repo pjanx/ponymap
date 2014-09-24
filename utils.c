@@ -1223,11 +1223,11 @@ poller_run (struct poller *self)
 	self->dispatch_next = 0;
 	self->dispatch_total = n_fds;
 
-	poller_timers_dispatch (&self->timers);
-	poller_idle_dispatch (self->idle);
-
 	// Sort them by file descriptor number for binary search
 	qsort (self->revents, n_fds, sizeof *self->revents, poller_compare_fds);
+
+	poller_timers_dispatch (&self->timers);
+	poller_idle_dispatch (self->idle);
 
 	while (self->dispatch_next < self->dispatch_total)
 	{
