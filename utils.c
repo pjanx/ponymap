@@ -1056,6 +1056,7 @@ struct poller
 {
 	int epoll_fd;                       ///< The epoll FD
 	struct poller_fd **fds;             ///< Information associated with each FD
+	int *dummy;                         ///< For poller_remove_from_dispatch()
 	struct epoll_event *revents;        ///< Output array for epoll_wait()
 	size_t len;                         ///< Number of polled descriptors
 	size_t alloc;                       ///< Number of entries allocated
@@ -1076,6 +1077,7 @@ poller_init (struct poller *self)
 	self->len = 0;
 	self->alloc = POLLER_MIN_ALLOC;
 	self->fds = xcalloc (self->alloc, sizeof *self->fds);
+	self->dummy = xcalloc (self->alloc, sizeof *self->dummy);
 	self->revents = xcalloc (self->alloc, sizeof *self->revents);
 	self->revents_len = 0;
 
@@ -1096,6 +1098,7 @@ poller_free (struct poller *self)
 
 	xclose (self->epoll_fd);
 	free (self->fds);
+	free (self->dummy);
 	free (self->revents);
 }
 
@@ -1112,6 +1115,8 @@ poller_ensure_space (struct poller *self)
 		(self->revents, sizeof *self->revents, self->alloc);
 	self->fds = xreallocarray
 		(self->fds, sizeof *self->fds, self->alloc);
+	self->dummy = xreallocarray
+		(self->dummy, sizeof *self->dummy, self->alloc);
 }
 
 static short
@@ -1174,7 +1179,15 @@ poller_remove_from_dispatch (struct poller *self, const struct poller_fd *fd)
 	struct epoll_event key = { .data.ptr = (void *) fd }, *fd_event;
 	if ((fd_event = bsearch (&key, self->revents,
 		self->revents_len, sizeof *self->revents, poller_compare_fds)))
+	{
 		fd_event->events = -1;
+
+		// Don't let any further bsearch()'s touch possibly freed memory
+		int *dummy = self->dummy + (fd_event - self->revents);
+		*dummy = fd->fd;
+		fd_event->data.ptr =
+			(uint8_t *) dummy - offsetof (struct poller_fd, fd);
+	}
 }
 
 static void
