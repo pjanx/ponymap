@@ -1806,6 +1806,7 @@ read_config_file (struct str_map *config, struct error **e)
 	{
 		error_set (e, "could not open `%s' for reading: %s",
 			filename, strerror (errno));
+		free (filename);
 		return false;
 	}
 
@@ -1842,6 +1843,7 @@ read_config_file (struct str_map *config, struct error **e)
 
 	str_free (&line);
 	fclose (fp);
+	free (filename);
 	return !errors;
 }
 
