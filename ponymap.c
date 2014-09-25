@@ -382,6 +382,7 @@ app_context_free (struct app_context *self)
 	str_map_free (&self->config);
 	str_map_free (&self->svc_list);
 	str_map_free (&self->services);
+	indicator_free (&self->indicator);
 	poller_free (&self->poller);
 
 	for (struct ip_range *iter = self->ip_list; iter; )
