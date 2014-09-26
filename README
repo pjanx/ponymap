@@ -17,10 +17,7 @@ the maximum number of concurrent connections.
 
 Building and Running
 --------------------
-Build dependencies: openssl, clang, pkg-config, GNU make, help2man, Jansson
-
-If you don't have Clang, you can edit the Makefile to use GCC or TCC, they work
-just as good.  But there's no CMake support yet, so I force it in the Makefile.
+Build dependencies: GCC/Clang, GNU make, help2man, pkg-config, openssl, Jansson
 
  $ git clone https://github.com/pjanouch/ponymap.git
  $ git submodule init

@@ -1,5 +1,4 @@
 SHELL = /bin/sh
-CC = clang
 # -Wunused-function is pretty annoying here, as everything is static
 CFLAGS = -std=c99 -Wall -Wextra -Wpedantic -Wno-unused-function -ggdb
 # -lpthread is only there for debugging (gdb & errno)
