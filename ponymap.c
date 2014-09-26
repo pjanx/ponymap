@@ -1245,8 +1245,7 @@ node_print_tree_level (struct node *self, struct node_print_data *data)
 	struct str indent;
 	str_init (&indent);
 
-	struct node_print_level *iter = data->head;
-	for (iter = data->head; iter; iter = iter->next)
+	for (struct node_print_level *iter = data->head; iter; iter = iter->next)
 	{
 		bool started = iter->started;
 		iter->started = true;
@@ -1257,9 +1256,10 @@ node_print_tree_level (struct node *self, struct node_print_data *data)
 	str_free (&indent);
 
 	char *escaped = node_escape_text (self->text);
-	self->bold
-		? print_bold (stdout, escaped)
-		: fputs (escaped, stdout);
+	if (self->bold)
+		print_bold (stdout, escaped);
+	else
+		fputs (escaped, stdout);
 	fputc ('\n', stdout);
 	free (escaped);
 

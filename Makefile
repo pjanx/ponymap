@@ -1,7 +1,7 @@
 SHELL = /bin/sh
 CC = clang
 # -Wunused-function is pretty annoying here, as everything is static
-CFLAGS = -std=c99 -Wall -Wextra -Wno-unused-function -ggdb
+CFLAGS = -std=c99 -Wall -Wextra -Wpedantic -Wno-unused-function -ggdb
 # -lpthread is only there for debugging (gdb & errno)
 # -lrt is only for glibc < 2.17
 LDFLAGS = `pkg-config --libs libssl jansson` -lpthread -lrt -ldl -lcurses
