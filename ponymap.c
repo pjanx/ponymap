@@ -1505,8 +1505,6 @@ generator_make_target (struct app_context *ctx)
 	target->ref_count = 1;
 	target->ctx = ctx;
 	target->ip = g->ip_iter;
-	if (g->ip_iter == g->ip_range_iter->original_address)
-		target->hostname = xstrdup (g->ip_range_iter->original_name);
 
 	uint32_t address = htonl (target->ip);
 	if (!inet_ntop (AF_INET, &address,
@@ -1515,6 +1513,10 @@ generator_make_target (struct app_context *ctx)
 		print_error ("%s: %s", "inet_ntop", strerror (errno));
 		*target->ip_string = '\0';
 	}
+
+	if (g->ip_iter == g->ip_range_iter->original_address
+	 && strcmp (target->ip_string, g->ip_range_iter->original_name))
+		target->hostname = xstrdup (g->ip_range_iter->original_name);
 
 	LIST_APPEND_WITH_TAIL (ctx->running_targets, ctx->running_tail, target);
 	target_update_indicator (ctx->running_targets);
