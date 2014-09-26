@@ -1773,7 +1773,7 @@ add_target (struct app_context *ctx, const char *target)
 
 	struct addrinfo hints = { .ai_family = AF_INET };
 	struct addrinfo *result;
-	int err = getaddrinfo (target, NULL, &hints, &result);
+	int err = getaddrinfo (host, NULL, &hints, &result);
 	if (err)
 	{
 		print_error ("cannot resolve `%s': %s", host, gai_strerror (err));
