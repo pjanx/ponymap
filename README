@@ -17,21 +17,29 @@ the maximum number of concurrent connections.
 
 Building and Running
 --------------------
-Build dependencies: GCC/Clang, GNU make, help2man, pkg-config, openssl, Jansson
+Build dependencies: CMake, pkg-config, help2man, curses, openssl, Jansson,
+                    lua = 5.3 (optional)
 
  $ git clone https://github.com/pjanouch/ponymap.git
  $ git submodule init
  $ git submodule update
+ $ mkdir build
+ $ cd build
+ $ cmake .. -DCMAKE_BUILD_TYPE=Debug -DWITH_LUA=NO
  $ make
 
-That is all, no installation is required, or supported for that matter.
+To install the application, you can do either the usual:
+ $ make install
 
-First you might want to generate a configuration file:
- $ ./ponymap --write-default-config
+Or you can try telling CMake to make a package for you.  For Debian it is:
+ $ cpack -G DEB
+ # dpkg -i ponymap-*.deb
 
-After making any necessary edits to the file (there are comments to aid you in
-doing that), simply run the appropriate program with no arguments to retrieve
-a usage text.
+Note that for versions of CMake before 2.8.9, you need to prefix cpack with
+`fakeroot' or file ownership will end up wrong.
+
+Having the program installed, simply run it with no arguments to retrieve
+a usage text.  Have fun scanning.
 
 Author's Notes
 --------------

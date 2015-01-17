@@ -39,8 +39,7 @@
 
 static struct config_item g_config_table[] =
 {
-	// TODO: set the default to the installation directory
-	{ "plugin_dir",      NULL,              "Where to search for plugins"    },
+	{ "plugin_dir",      PLUGIN_DIR,        "Where to search for plugins"    },
 	{ NULL,              NULL,              NULL                             }
 };
 
