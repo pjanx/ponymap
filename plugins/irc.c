@@ -214,8 +214,10 @@ struct scan_data
 };
 
 static void *
-scan_init (struct unit *u)
+scan_init (struct service *service, struct unit *u)
 {
+	(void) service;
+
 	char nick[IRC_MAX_NICKNAME + 1];
 	size_t i;
 	for (i = 0; i < sizeof nick - 1; i++)

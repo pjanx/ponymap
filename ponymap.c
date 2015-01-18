@@ -623,7 +623,7 @@ unit_start_scan (struct unit *u)
 	u->scan_started = true;
 	poller_timer_set (&u->timeout_event, u->target->ctx->scan_timeout * 1000);
 
-	u->service_data = u->service->scan_init (u);
+	u->service_data = u->service->scan_init (u->service, u);
 	u->fd_event.dispatcher = (poller_fd_fn) on_unit_ready;
 	unit_update_poller (u, NULL);
 }
@@ -792,6 +792,13 @@ plugin_api_register_service (void *app_context, struct service *info)
 }
 
 static const char *
+plugin_api_get_config (void *app_context, const char *key)
+{
+	struct app_context *ctx = app_context;
+	return str_map_find (&ctx->config, key);
+}
+
+static const char *
 plugin_api_unit_get_address (struct unit *u)
 {
 	return u->target->ip_string;
@@ -828,6 +835,7 @@ plugin_api_unit_abort (struct unit *u)
 static struct plugin_api g_plugin_vtable =
 {
 	.register_service  = plugin_api_register_service,
+	.get_config        = plugin_api_get_config,
 	.unit_get_address  = plugin_api_unit_get_address,
 	.unit_write        = plugin_api_unit_write,
 	.unit_set_success  = plugin_api_unit_set_success,

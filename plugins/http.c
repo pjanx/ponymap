@@ -94,8 +94,10 @@ on_headers_complete (http_parser *parser)
 }
 
 static void *
-scan_init (struct unit *u)
+scan_init (struct service *service, struct unit *u)
 {
+	(void) service;
+
 	struct str hello;
 	str_init (&hello);
 	str_append_printf (&hello, "GET / HTTP/1.0\r\n"

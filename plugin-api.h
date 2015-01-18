@@ -38,11 +38,12 @@ struct service
 {
 	const char *name;                   ///< Name of the service
 	int flags;                          ///< Service flags
+	void *user_data;                    ///< User data
 
 	// scan_init -> on_data* -> [on_eof/on_error] -> on_aborted -> scan_free
 
 	/// Initialize a scan, returning a handle to it
-	void *(*scan_init) (struct unit *u);
+	void *(*scan_init) (struct service *self, struct unit *u);
 
 	/// Destroy the handle created for the scan
 	void (*scan_free) (void *handle);
@@ -66,6 +67,9 @@ struct plugin_api
 {
 	/// Register the plugin for a service
 	void (*register_service) (void *ctx, struct service *info);
+
+	/// Retrieve an item from the configuration
+	const char *(*get_config) (void *ctx, const char *key);
 
 	/// Get the IP address of the target as a string
 	const char *(*unit_get_address) (struct unit *u);

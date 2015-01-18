@@ -73,7 +73,11 @@ set_target_properties (plugin-http PROPERTIES OUTPUT_NAME http PREFIX "")
 install (TARGETS plugin-http DESTINATION ${plugin_dir})
 
 # Build the other plugins
-foreach (plugin irc ssh)
+set (plugins irc ssh)
+if (WITH_LUA)
+	list (APPEND plugins lua-loader)
+endif (WITH_LUA)
+foreach (plugin ${plugins})
 	set (target plugin-${plugin})
 	add_library (${target} SHARED plugins/${plugin}.c plugin-api.h)
 	target_link_libraries (${target} ${project_libraries})

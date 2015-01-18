@@ -37,8 +37,10 @@ struct scan_data
 };
 
 static void *
-scan_init (struct unit *u)
+scan_init (struct service *service, struct unit *u)
 {
+	(void) service;
+
 	struct scan_data *scan = xcalloc (1, sizeof *scan);
 	str_init (&scan->input);
 	scan->u = u;
