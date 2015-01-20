@@ -86,11 +86,12 @@ ponymap.register_service ({
 	new_scan = Socks4.new
 })
 
-ponymap.register_service ({
-	name = "SOCKS4A",
-	flags = 0,
-	new_scan = Socks4A.new
-})
+-- At the moment this is nearly useless
+-- ponymap.register_service ({
+-- 	name = "SOCKS4A",
+-- 	flags = 0,
+-- 	new_scan = Socks4A.new
+-- })
 
 ponymap.register_service ({
 	name = "SOCKS5",
