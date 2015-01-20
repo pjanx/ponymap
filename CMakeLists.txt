@@ -37,7 +37,9 @@ else (CURSES_FOUND)
 endif (ncursesw_FOUND)
 
 if (WITH_LUA)
-	pkg_search_module (lua REQUIRED lua5.3 lua-5.3 lua=5.3)
+	# FIXME: for "lua" we also need to check that it is < 5.4
+	#   which doesn't seem to be possible with FindPkgConfig
+	pkg_search_module (lua REQUIRED lua5.3 lua-5.3 lua>=5.3)
 	list (APPEND project_libraries ${lua_LIBRARIES})
 	include_directories (${lua_INCLUDE_DIRS})
 endif (WITH_LUA)
