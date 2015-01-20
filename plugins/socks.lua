@@ -19,6 +19,8 @@
 
 -- This plugin serves as an example of how to write Lua plugins for ponymap
 
+ponymap.check_api_version (1)
+
 -- SOCKS 4
 
 local Socks4 = {}

@@ -29,6 +29,8 @@
 #include <lualib.h>
 #include <lauxlib.h>
 
+#define XLUA_API_VERSION 1              ///< Version of the Lua API
+
 // --- Utilities ---------------------------------------------------------------
 
 static struct plugin_data
@@ -63,12 +65,12 @@ xlua_panic (lua_State *L)
 
 // --- Unit wrapper ------------------------------------------------------------
 
+#define UNIT_METATABLE "unit"           ///< Identifier for the Lua metatable
+
 struct unit_wrapper
 {
 	struct unit *unit;                  ///< The underlying unit
 };
-
-#define UNIT_METATABLE "unit"
 
 static int
 xlua_unit_get_address (lua_State *L)
@@ -341,11 +343,21 @@ xlua_get_config (lua_State *L)
 	return 0;
 }
 
+static int
+xlua_check_api_version (lua_State *L)
+{
+	lua_Integer requested = luaL_checkinteger (L, 1);
+	if (requested != XLUA_API_VERSION)
+		return luaL_error (L, "incompatible API version");
+	return 0;
+}
+
 static luaL_Reg xlua_library[] =
 {
-	{ "register_service", xlua_register_service },
-	{ "get_config",       xlua_get_config       },
-	{ NULL,               NULL                  }
+	{ "register_service",  xlua_register_service  },
+	{ "get_config",        xlua_get_config        },
+	{ "check_api_version", xlua_check_api_version },
+	{ NULL,                NULL                   }
 };
 
 static bool
@@ -403,6 +415,8 @@ initialize (void *ctx, struct plugin_api *api)
 	luaL_newlib (L, xlua_library);
 	lua_pushinteger (L, SERVICE_SUPPORTS_TLS);
 	lua_setfield (L, -2, "SERVICE_SUPPORTS_TLS");
+	lua_pushinteger (L, XLUA_API_VERSION);
+	lua_setfield (L, -2, "api_version");
 	lua_setglobal (L, PROGRAM_NAME);
 
 	// Create a metatable for the units
