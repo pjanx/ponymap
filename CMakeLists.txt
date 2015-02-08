@@ -23,7 +23,7 @@ set (project_VERSION "${project_VERSION}.${project_VERSION_PATCH}")
 find_package (Curses)
 find_package (PkgConfig REQUIRED)
 pkg_check_modules (jansson REQUIRED jansson)
-pkg_check_modules (libssl REQUIRED libssl)
+pkg_check_modules (libssl REQUIRED libssl libcrypto)
 pkg_check_modules (ncursesw ncursesw)
 
 if (ncursesw_FOUND)
