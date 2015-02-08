@@ -25,7 +25,7 @@ Build dependencies: CMake, pkg-config, help2man, curses, openssl, Jansson,
  $ git submodule update
  $ mkdir build
  $ cd build
- $ cmake .. -DCMAKE_BUILD_TYPE=Debug -DWITH_LUA=NO
+ $ cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Debug -DWITH_LUA=NO
  $ make
 
 To install the application, you can do either the usual:
