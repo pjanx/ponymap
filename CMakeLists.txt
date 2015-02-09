@@ -76,8 +76,13 @@ install (TARGETS plugin-http DESTINATION ${plugin_dir})
 
 # Build the other plugins
 set (plugins irc ssh)
+set (lua_plugins socks)
+
 if (WITH_LUA)
 	list (APPEND plugins lua-loader)
+	foreach (lua_plugin ${lua_plugins})
+		install (FILES plugins/${lua_plugin}.lua DESTINATION ${plugin_dir})
+	endforeach (lua_plugin)
 endif (WITH_LUA)
 foreach (plugin ${plugins})
 	set (target plugin-${plugin})
