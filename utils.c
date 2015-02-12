@@ -1081,6 +1081,7 @@ poller_init (struct poller *self)
 	self->revents_len = 0;
 
 	poller_timers_init (&self->timers);
+	self->idle = NULL;
 }
 
 static void

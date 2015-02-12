@@ -104,7 +104,7 @@ foreach (page ${PROJECT_NAME})
 	add_custom_command (OUTPUT ${page_output}
 		COMMAND ${HELP2MAN_EXECUTABLE} -N
 			"${PROJECT_BINARY_DIR}/${page}" -o ${page_output}
-		DEPENDS ${PROJECT_NAME}
+		DEPENDS ${page}
 		COMMENT "Generating man page for ${page}" VERBATIM)
 endforeach (page)
 
