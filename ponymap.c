@@ -720,9 +720,12 @@ unit_make (struct target *target, uint32_t ip, uint16_t port,
 	else if (errno == EINPROGRESS)
 		connected = false;
 	else
+	{
+		xclose (socket_fd);
 		return errno == EADDRNOTAVAIL
 			? UNIT_MAKE_TRY_AGAIN
 			: UNIT_MAKE_ERROR;
+	}
 
 	struct unit *u;
 	if (!(u = unit_new (target, socket_fd, port, service, transport)))
