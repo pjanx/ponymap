@@ -4,6 +4,18 @@ notifications:
   channels: "anathema.us.nu#anathema"
   use_notice: true
   skip_join: true
+env:
+ global:
+  - secure: "HwvulqH0sB/PJVWzv/N3C8SjbeoW0QDWY2WmdVOxj2pzLJY/KtyWCktHRmXxGLcua99dA3wuwWpo5zMj+exw5pqnhgatnpinMR0DZ1+1hrEqPTbRwm+iy+QLsk1kUzksbijewmCYOggXoWu6ltvU9aEFjsSInuWap0MlFbBidGE="
+addons:
+ coverity_scan:
+  project:
+   name: "pjanouch/ponymap"
+   description: "Experimental network scanner"
+  notification_email: p.janouch@gmail.com
+  build_command_prepend: "cmake .. -DCMAKE_BUILD_TYPE=Release -DWITH_LUA=OFF"
+  build_command: "make"
+  branch_pattern: coverity_scan
 compiler:
  - clang
  - gcc
