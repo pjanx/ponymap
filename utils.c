@@ -1238,6 +1238,8 @@ poller_run (struct poller *self)
 			continue;
 
 		struct poller_fd *fd = revents->data.ptr;
+		hard_assert (fd->index != -1);
+
 		struct pollfd pfd;
 		pfd.fd = fd->fd;
 		pfd.revents = poller_epoll_to_poll_events (revents->events);
