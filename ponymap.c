@@ -64,7 +64,8 @@ init_terminal (void)
 	if ((g_terminal.stdout_is_tty = isatty (STDOUT_FILENO)))
 		tty_fd = STDOUT_FILENO;
 
-	if (tty_fd == -1 || setupterm (NULL, tty_fd, NULL) == ERR)
+	int err;
+	if (tty_fd == -1 || setupterm (NULL, tty_fd, &err) == ERR)
 		return;
 
 	// Make sure all terminal features used by us are supported
