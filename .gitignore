@@ -1,7 +1,5 @@
 # Build files
-/ponymap
-/ponymap.1
-/plugins/*.so
+/build
 
 # Qt Creator files
 /ponymap.config
