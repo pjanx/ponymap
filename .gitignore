@@ -2,6 +2,7 @@
 /build
 
 # Qt Creator files
+/CMakeLists.txt.user*
 /ponymap.config
 /ponymap.files
 /ponymap.creator*
