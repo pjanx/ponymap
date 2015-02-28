@@ -20,7 +20,8 @@
 
 // I can't really recommend using this interface as it adds a lot of overhead
 
-#include "../utils.c"
+#include "config.h"
+#include "../liberty/liberty.c"
 #include "../plugin-api.h"
 
 #include <dirent.h>

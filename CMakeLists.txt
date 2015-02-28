@@ -51,7 +51,7 @@ list (APPEND project_libraries
 include_directories (${libssl_INCLUDE_DIRS} ${jansson_INCLUDE_DIRS})
 
 # Project source files
-set (project_sources ${PROJECT_NAME}.c siphash.c)
+set (project_sources ${PROJECT_NAME}.c)
 set (project_headers ${PROJECT_BINARY_DIR}/config.h)
 
 # Generate a configuration file

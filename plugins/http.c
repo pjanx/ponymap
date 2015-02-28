@@ -18,8 +18,10 @@
  *
  */
 
-#include "../utils.c"
+#include "config.h"
+#include "../liberty/liberty.c"
 #include "../plugin-api.h"
+
 #include "../http-parser/http_parser.h"
 
 // --- Service detection -------------------------------------------------------

@@ -1,3 +1,6 @@
 [submodule "http-parser"]
 	path = http-parser
 	url = git://github.com/joyent/http-parser.git
+[submodule "liberty"]
+	path = liberty
+	url = git://github.com/pjanouch/liberty.git

@@ -18,8 +18,13 @@
  *
  */
 
-#include "utils.c"
+#define LIBERTY_WANT_SSL
+#define LIBERTY_WANT_POLLER
+
+#include "config.h"
+#include "liberty/liberty.c"
 #include "plugin-api.h"
+
 #include <inttypes.h>
 
 #include <dirent.h>
@@ -150,7 +155,7 @@ print_bold (FILE *stream, const char *s)
 
 struct port_range
 {
-	LIST_HEADER (port_range)
+	LIST_HEADER (struct port_range)
 	uint16_t start;                     ///< The beginning of the range
 	uint16_t end;                       ///< The end of the range
 };
@@ -165,7 +170,7 @@ port_range_delete (struct port_range *self)
 
 struct ip_range
 {
-	LIST_HEADER (ip_range)
+	LIST_HEADER (struct ip_range)
 	uint32_t start;                     ///< The beginning of the range
 	uint32_t end;                       ///< The end of the range
 
@@ -184,7 +189,7 @@ ip_range_delete (struct ip_range *self)
 
 struct target
 {
-	LIST_HEADER (target)
+	LIST_HEADER (struct target)
 	size_t ref_count;                   ///< Reference count
 	struct app_context *ctx;            ///< Application context
 
@@ -210,7 +215,7 @@ static void target_unref (struct target *self);
 
 struct unit
 {
-	LIST_HEADER (unit)
+	LIST_HEADER (struct unit)
 	size_t ref_count;                   ///< Reference count
 	struct target *target;              ///< Target context
 
@@ -250,7 +255,7 @@ enum transport_io_result
 // The only real purpose of this is to abstract away TLS/SSL
 struct transport
 {
-	LIST_HEADER (transport)
+	LIST_HEADER (struct transport)
 
 	const char *name;                   ///< Name of the transport
 

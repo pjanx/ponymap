@@ -18,7 +18,8 @@
  *
  */
 
-#include "../utils.c"
+#include "config.h"
+#include "../liberty/liberty.c"
 #include "../plugin-api.h"
 
 // --- Service detection -------------------------------------------------------
