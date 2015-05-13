@@ -531,15 +531,15 @@ unit_abort (struct unit *u)
 	{
 		if (u->service->on_aborted)
 			u->service->on_aborted (u->service_data);
-		u->service->scan_free (u->service_data);
-	}
 
-	u->transport->cleanup (u);
-	xclose (u->socket_fd);
+		u->service->scan_free (u->service_data);
+		u->transport->cleanup (u);
+	}
 
 	poller_timer_reset (&u->timeout_event);
 
 	// This way we avoid a syscall with epoll
+	xclose (u->socket_fd);
 	u->fd_event.closed = true;
 	poller_fd_reset (&u->fd_event);
 
@@ -626,6 +626,13 @@ abort:
 static void
 unit_start_scan (struct unit *u)
 {
+	if (!u->transport->init (u))
+	{
+		// TODO: maybe print a message with the problem?
+		unit_abort (u);
+		return;
+	}
+
 	u->scan_started = true;
 	poller_timer_set (&u->timeout_event, u->target->ctx->scan_timeout * 1000);
 
@@ -654,10 +661,9 @@ on_unit_connected (const struct pollfd *pfd, struct unit *u)
 		soft_assert (error != EADDRNOTAVAIL);
 
 		unit_abort (u);
-		return;
 	}
-
-	unit_start_scan (u);
+	else
+		unit_start_scan (u);
 }
 
 static struct unit *
@@ -675,12 +681,6 @@ unit_new (struct target *target, int socket_fd, uint16_t port,
 	str_init (&u->read_buffer);
 	str_init (&u->write_buffer);
 	str_vector_init (&u->info);
-
-	if (!transport->init (u))
-	{
-		unit_unref (u);
-		return NULL;
-	}
 
 	poller_timer_init (&u->timeout_event, &target->ctx->poller);
 	u->timeout_event.dispatcher = (poller_timer_fn) unit_abort;
@@ -733,13 +733,7 @@ unit_make (struct target *target, uint32_t ip, uint16_t port,
 			: UNIT_MAKE_ERROR;
 	}
 
-	struct unit *u;
-	if (!(u = unit_new (target, socket_fd, port, service, transport)))
-	{
-		xclose (socket_fd);
-		return UNIT_MAKE_ERROR;
-	}
-
+	struct unit *u = unit_new (target, socket_fd, port, service, transport);
 	if (connected)
 		unit_start_scan (u);
 	else
