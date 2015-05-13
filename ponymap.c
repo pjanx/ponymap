@@ -204,7 +204,7 @@ struct target
 
 	/// All currently running units for this target, holding a reference to us.
 	/// They remove themselves from this list upon terminating.  The purpose of
-	/// this list is making it possible to abort them forcefully.
+	/// this list is making it possible to stop them forcefully.
 	struct unit *running_units;
 };
 
@@ -235,8 +235,8 @@ struct unit
 
 	struct str_vector info;             ///< Info resulting from the scan
 	bool scan_started;                  ///< Whether the scan has been started
-	bool abortion_requested;            ///< Abortion requested by service
-	bool aborted;                       ///< Scan has been aborted
+	bool stop_requested;                ///< Stopping requested by service
+	bool stopped;                       ///< Scan has been stopped
 	bool success;                       ///< Service has been found
 };
 
@@ -522,16 +522,16 @@ unit_unref (struct unit *self)
 }
 
 static void
-unit_abort (struct unit *u)
+unit_stop (struct unit *u)
 {
-	if (u->aborted)
+	if (u->stopped)
 		return;
 
-	u->aborted = true;
+	u->stopped = true;
 	if (u->scan_started)
 	{
-		if (u->service->on_aborted)
-			u->service->on_aborted (u->service_data);
+		if (u->service->on_stopped)
+			u->service->on_stopped (u->service_data);
 
 		u->service->scan_free (u->service_data);
 		u->transport->cleanup (u);
@@ -599,8 +599,8 @@ on_unit_ready (const struct pollfd *pfd, struct unit *u)
 		service->on_data (u->service_data, buf->str, buf->len);
 		str_remove_slice (buf, 0, buf->len);
 
-		if (u->abortion_requested)
-			goto abort;
+		if (u->stop_requested)
+			goto stop;
 	}
 
 	if ((result = transport->on_writeable (u)) == TRANSPORT_IO_ERROR)
@@ -611,8 +611,8 @@ on_unit_ready (const struct pollfd *pfd, struct unit *u)
 	{
 		if (service->on_eof)
 			service->on_eof (u->service_data);
-		if (u->abortion_requested || !u->write_buffer.len)
-			goto abort;
+		if (u->stop_requested || !u->write_buffer.len)
+			goto stop;
 	}
 
 	unit_update_poller (u, pfd);
@@ -622,8 +622,8 @@ error:
 	if (service->on_error)
 		service->on_error (u->service_data);
 
-abort:
-	unit_abort (u);
+stop:
+	unit_stop (u);
 }
 
 static void
@@ -632,7 +632,7 @@ unit_start_scan (struct unit *u)
 	if (!u->transport->init (u))
 	{
 		// TODO: maybe print a message with the problem?
-		unit_abort (u);
+		unit_stop (u);
 		return;
 	}
 
@@ -663,7 +663,7 @@ on_unit_connected (const struct pollfd *pfd, struct unit *u)
 		//   But POSIX seems to say that this can block, too.
 		soft_assert (error != EADDRNOTAVAIL);
 
-		unit_abort (u);
+		unit_stop (u);
 	}
 	else
 		unit_start_scan (u);
@@ -686,7 +686,7 @@ unit_new (struct target *target, int socket_fd, uint16_t port,
 	str_vector_init (&u->info);
 
 	poller_timer_init (&u->timeout_event, &target->ctx->poller);
-	u->timeout_event.dispatcher = (poller_timer_fn) unit_abort;
+	u->timeout_event.dispatcher = (poller_timer_fn) unit_stop;
 	u->timeout_event.user_data = u;
 
 	poller_fd_init (&u->fd_event, &target->ctx->poller, socket_fd);
@@ -773,7 +773,7 @@ initiate_quit (struct app_context *ctx)
 		for (u_iter = t_iter->running_units; u_iter; u_iter = u_next)
 		{
 			u_next = u_iter->next;
-			unit_abort (u_iter);
+			unit_stop (u_iter);
 		}
 	}
 
@@ -813,7 +813,7 @@ plugin_api_unit_get_address (struct unit *u)
 static ssize_t
 plugin_api_unit_write (struct unit *u, const void *buf, size_t len)
 {
-	if (u->abortion_requested || u->aborted)
+	if (u->stop_requested || u->stopped)
 		return -1;
 
 	str_append_data (&u->write_buffer, buf, len);
@@ -833,9 +833,9 @@ plugin_api_unit_add_info (struct unit *u, const char *result)
 }
 
 static void
-plugin_api_unit_abort (struct unit *u)
+plugin_api_unit_stop (struct unit *u)
 {
-	u->abortion_requested = true;
+	u->stop_requested = true;
 }
 
 static struct plugin_api g_plugin_vtable =
@@ -846,7 +846,7 @@ static struct plugin_api g_plugin_vtable =
 	.unit_write        = plugin_api_unit_write,
 	.unit_set_success  = plugin_api_unit_set_success,
 	.unit_add_info     = plugin_api_unit_add_info,
-	.unit_abort        = plugin_api_unit_abort
+	.unit_stop         = plugin_api_unit_stop
 };
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -1546,7 +1546,7 @@ target_unref (struct target *self)
 	if (self->results)
 		target_dump_results (self);
 
-	// These must have been aborted already (although we could do that in here)
+	// These must have been stopped already (although we could do that in here)
 	hard_assert (!self->running_units);
 
 	struct unit *iter, *next;

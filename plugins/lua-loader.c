@@ -110,10 +110,10 @@ xlua_unit_add_info (lua_State *L)
 }
 
 static int
-xlua_unit_abort (lua_State *L)
+xlua_unit_stop (lua_State *L)
 {
 	struct unit_wrapper *data = luaL_checkudata (L, 1, UNIT_METATABLE);
-	g_data.api->unit_abort (data->unit);
+	g_data.api->unit_stop (data->unit);
 	return 0;
 }
 
@@ -133,7 +133,7 @@ static luaL_Reg xlua_unit_table[] =
 	{ "write",            xlua_unit_write       },
 	{ "set_success",      xlua_unit_set_success },
 	{ "add_info",         xlua_unit_add_info    },
-	{ "abort",            xlua_unit_abort       },
+	{ "stop",             xlua_unit_stop        },
 	{ "__gc",             xlua_unit_destroy     },
 	{ NULL,               NULL                  }
 };
@@ -208,7 +208,7 @@ handle_scan_method_failure (struct scan_data *data)
 {
 	print_error ("Lua: service `%s': %s", data->service->name,
 		lua_tostring (data->L, -1));
-	g_data.api->unit_abort (data->unit);
+	g_data.api->unit_stop (data->unit);
 	lua_pop (data->L, 1);
 }
 
@@ -273,10 +273,10 @@ on_error (void *handle)
 }
 
 static void
-on_aborted (void *handle)
+on_stopped (void *handle)
 {
 	struct scan_data *data = handle;
-	if (!prepare_scan_method (data, "on_aborted"))
+	if (!prepare_scan_method (data, "on_stopped"))
 		return;
 	if (lua_pcall (data->L, 1, 0, 0))
 		handle_scan_method_failure (data);
@@ -329,7 +329,7 @@ xlua_register_service (lua_State *L)
 	s->on_data    = on_data;
 	s->on_eof     = on_eof;
 	s->on_error   = on_error;
-	s->on_aborted = on_aborted;
+	s->on_stopped = on_stopped;
 
 	g_data.api->register_service (g_data.ctx, s);
 	return 0;

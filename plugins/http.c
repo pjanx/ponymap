@@ -90,7 +90,7 @@ on_headers_complete (http_parser *parser)
 	struct scan_data *scan = parser->data;
 	// We've got this far, this must be an HTTP server
 	g_data.api->unit_set_success (scan->u, true);
-	g_data.api->unit_abort (scan->u);
+	g_data.api->unit_stop (scan->u);
 	return 1;
 }
 
@@ -144,12 +144,12 @@ on_data (void *handle, const void *data, size_t len)
 	if (parser->upgrade)
 	{
 		// We should never get here though because `on_headers_complete'
-		// is called first and ends up aborting the unit.
+		// is called first and ends up stopping the unit.
 		g_data.api->unit_add_info (scan->u, "upgrades to a different protocol");
-		g_data.api->unit_abort (scan->u);
+		g_data.api->unit_stop (scan->u);
 	}
 	else if (n_parsed != len && parser->http_errno != HPE_CB_headers_complete)
-		g_data.api->unit_abort (scan->u);
+		g_data.api->unit_stop (scan->u);
 }
 
 static void
@@ -168,7 +168,7 @@ static struct service g_http_service =
 	.on_data     = on_data,
 	.on_eof      = on_eof,
 	.on_error    = NULL,
-	.on_aborted  = NULL
+	.on_stopped  = NULL
 };
 
 static bool

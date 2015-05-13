@@ -107,7 +107,7 @@ on_irc_message (const struct irc_message *msg, const char *raw, void *user_data)
 			g_data.api->unit_add_info (scan->u, info);
 			free (info);
 
-			g_data.api->unit_abort (scan->u);
+			g_data.api->unit_stop (scan->u);
 		}
 	}
 }
@@ -130,7 +130,7 @@ static struct service g_irc_service =
 	.on_data     = on_data,
 	.on_eof      = NULL,
 	.on_error    = NULL,
-	.on_aborted  = NULL
+	.on_stopped  = NULL
 };
 
 static bool

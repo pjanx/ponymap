@@ -39,7 +39,7 @@ struct service
 	int flags;                          ///< Service flags
 	void *user_data;                    ///< User data
 
-	// scan_init -> on_data* -> [on_eof/on_error] -> on_aborted -> scan_free
+	// scan_init -> on_data* -> [on_eof/on_error] -> on_stopped -> scan_free
 
 	/// Initialize a scan, returning a handle to it
 	void *(*scan_init) (struct service *self, struct unit *u);
@@ -58,8 +58,8 @@ struct service
 	/// Network or other error has occured
 	void (*on_error) (void *handle);
 
-	/// The scan has been aborted
-	void (*on_aborted) (void *handle);
+	/// The scan has been stopped
+	void (*on_stopped) (void *handle);
 };
 
 struct plugin_api
@@ -83,7 +83,7 @@ struct plugin_api
 	void (*unit_add_info) (struct unit *u, const char *result);
 
 	/// Abort the scan, close the connection
-	void (*unit_abort) (struct unit *u);
+	void (*unit_stop) (struct unit *u);
 };
 
 struct plugin_info

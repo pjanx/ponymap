@@ -34,7 +34,7 @@ function MPD:on_data (data)
 			self.unit:add_info ("version " .. version)
 			self.unit:set_success (true)
 		end
-		self.unit:abort ()
+		self.unit:stop ()
 	end
 end
 

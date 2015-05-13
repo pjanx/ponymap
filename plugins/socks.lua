@@ -38,7 +38,7 @@ function Socks4:on_data (data)
 		if null == 0 and code >= 90 and code <= 93 then
 			self.unit:set_success (true)
 		end
-		self.unit:abort ()
+		self.unit:stop ()
 	end
 end
 
@@ -75,7 +75,7 @@ function Socks5:on_data (data)
 			end
 			self.unit:set_success (true)
 		end
-		self.unit:abort ()
+		self.unit:stop ()
 	end
 end
 

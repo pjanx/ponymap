@@ -77,7 +77,7 @@ on_data (void *handle, const void *data, size_t len)
 	g_data.api->unit_set_success (scan->u, true);
 
 end_scan:
-	g_data.api->unit_abort (scan->u);
+	g_data.api->unit_stop (scan->u);
 }
 
 static struct service g_ssh_service =
@@ -90,7 +90,7 @@ static struct service g_ssh_service =
 	.on_data     = on_data,
 	.on_eof      = NULL,
 	.on_error    = NULL,
-	.on_aborted  = NULL
+	.on_stopped  = NULL
 };
 
 static bool
