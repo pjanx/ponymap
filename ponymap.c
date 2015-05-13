@@ -1374,15 +1374,26 @@ target_dump_json (struct target *self, struct target_dump_data *data)
 
 	size_t block = 8 * sizeof *data->undetermined;
 	for (size_t i = 0; i < 65536 / block; i++)
-		for (size_t k = 0; k < block; k++)
-		{
-			if (!(data->undetermined[i] & (1 << k)))
-				continue;
+	for (size_t k = 0; k < block; k++)
+	{
+		if (!(data->undetermined[i] & (1 << k)))
+			continue;
 
-			service = json_object ();
-			json_object_set_new (service, "port", json_integer (i * block + k));
-			json_array_append_new (undetermined, service);
-		}
+		service = json_object ();
+		json_object_set_new (service, "port", json_integer (i * block + k));
+		json_array_append_new (undetermined, service);
+	}
+}
+
+static void
+target_dump_terminal_undetermined (uint16_t port_no, struct node ***tail)
+{
+	struct servent *serv = getservbyport (ntohs (port_no), "tcp");
+	struct node *port = **tail = node_new (serv
+		? xstrdup_printf ("port %" PRIu16 " (%s)",
+			port_no, serv->s_name)
+		: xstrdup_printf ("port %" PRIu16, port_no));
+	*tail = &port->next;
 }
 
 static void
@@ -1436,15 +1447,9 @@ target_dump_terminal (struct target *self, struct target_dump_data *data)
 
 		size_t block = 8 * sizeof *data->undetermined;
 		for (size_t i = 0; i < 65536 / block; i++)
-			for (size_t k = 0; k < block; k++)
-			{
-				if (!(data->undetermined[i] & (1 << k)))
-					continue;
-
-				port = *p_tail = node_new (xstrdup_printf
-					("port %" PRIu16, (uint16_t) (i * block + k)));
-				p_tail = &port->next;
-			}
+		for (size_t k = 0; k < block; k++)
+			if ((data->undetermined[i] & (1 << k)))
+				target_dump_terminal_undetermined (i * block + k, &p_tail);
 	}
 
 	node_print_tree (root);
