@@ -197,9 +197,10 @@ struct target
 	char ip_string[INET_ADDRSTRLEN];    ///< IP address as a string
 	char *hostname;                     ///< Hostname
 
-	/// All units that have ended, successfully finding a service.  These don't
-	/// hold a reference to us as they're considered a part of this object;
-	/// we hold a reference to them.
+	/// All units that have ended, either successfully finding a service, or
+	/// just successful in establishing a connection.
+	/// These don't hold a reference to us as they're considered a part of
+	/// this object; we hold a reference to them.
 	struct unit *results;
 
 	/// All currently running units for this target, holding a reference to us.
@@ -554,10 +555,12 @@ unit_abort (struct unit *u)
 	// the generator right now, though, as we could spin in a long loop
 	poller_idle_set (&u->target->ctx->step_event);
 
-	if (u->success)
+	// If the scan has been started, we have successfully connected at least
+	if (u->scan_started || u->success)
 	{
 		struct target *target = u->target;
-		target->ctx->stats_results++;
+		if (u->success)
+			target->ctx->stats_results++;
 
 		// Now we're a part of the target
 		LIST_PREPEND (target->results, u);
@@ -1314,6 +1317,7 @@ struct target_dump_data
 {
 	struct unit **results;              ///< Results sorted by service
 	size_t results_len;                 ///< Number of results
+	uint32_t *undetermined;             ///< Bitmap of undetermined services
 };
 
 static void
@@ -1362,6 +1366,24 @@ target_dump_json (struct target *self, struct target_dump_data *data)
 		for (size_t k = 0; k < u->info.len; k++)
 			json_array_append_new (info, json_string (u->info.vector[k]));
 	}
+
+	json_t *undetermined = json_array ();
+	json_object_set_new (o, "undetermined", undetermined);
+
+	if (!data->undetermined)
+		return;
+
+	size_t block = 8 * sizeof *data->undetermined;
+	for (size_t i = 0; i < 65536 / block; i++)
+		for (size_t k = 0; k < block; k++)
+		{
+			if (!(data->undetermined[i] & (1 << k)))
+				continue;
+
+			service = json_object ();
+			json_object_set_new (service, "port", json_integer (i * block + k));
+			json_array_append_new (undetermined, service);
+		}
 }
 
 static void
@@ -1408,6 +1430,24 @@ target_dump_terminal (struct target *self, struct target_dump_data *data)
 		}
 	}
 
+	if (data->undetermined)
+	{
+		*s_tail = service = node_new (xstrdup ("undetermined"));
+		p_tail = &service->children;
+
+		size_t block = 8 * sizeof *data->undetermined;
+		for (size_t i = 0; i < 65536 / block; i++)
+			for (size_t k = 0; k < block; k++)
+			{
+				if (!(data->undetermined[i] & (1 << k)))
+					continue;
+
+				port = *p_tail = node_new (xstrdup_printf
+					("port %" PRIu16, (uint16_t) (i * block + k)));
+				p_tail = &port->next;
+			}
+	}
+
 	node_print_tree (root);
 	node_delete (root);
 	putchar ('\n');
@@ -1432,19 +1472,41 @@ target_dump_results (struct target *self)
 	struct app_context *ctx = self->ctx;
 	struct target_dump_data data;
 
+	// Equals { successfully connected } \ { any service detected }
+	static uint32_t undetermined[65536 / 32];
+	memset (undetermined, 0, sizeof undetermined);
+
 	size_t len = 0;
 	for (struct unit *iter = self->results; iter; iter = iter->next)
-		len++;
+	{
+		if (iter->success)
+			len++;
+		else
+			undetermined[iter->port / 32] |=   1 << (iter->port % 32);
+	}
 
 	struct unit *sorted[len];
 	data.results = sorted;
 	data.results_len = len;
 
 	for (struct unit *iter = self->results; iter; iter = iter->next)
-		sorted[--len] = iter;
+		if (iter->success)
+		{
+			sorted[--len] = iter;
+			undetermined[iter->port / 32] &= ~(1 << (iter->port % 32));
+		}
 
 	// Sort them by service name so that they can be grouped
 	qsort (sorted, N_ELEMENTS (sorted), sizeof *sorted, unit_cmp_by_order);
+
+	// Only set the field if there were any undetermined services at all
+	data.undetermined = NULL;
+	for (size_t i = 0; i < N_ELEMENTS (undetermined); i++)
+		if (undetermined[i])
+		{
+			data.undetermined = undetermined;
+			break;
+		}
 
 	if (ctx->json_results)
 		target_dump_json (self, &data);
