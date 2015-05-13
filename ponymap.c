@@ -323,6 +323,7 @@ static void on_generator_step_requested (struct app_context *ctx);
 struct app_context
 {
 	struct str_map config;              ///< User configuration
+	bool list_services;                 ///< Option flag, list all services
 	unsigned connect_timeout;           ///< Timeout for connect() in sec.
 	unsigned scan_timeout;              ///< Timeout for service scans in sec.
 
@@ -1955,6 +1956,7 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv)
 		  "ports/port ranges, separated by commas" },
 		{ 's', "service", "SERVICES", 0,
 		  "services to scan for, separated by commas" },
+		{ 'l', "list-services", NULL, 0, "list all known services" },
 		{ 't', "connect-timeout", "TIMEOUT", 0,
 		  "timeout for connect, in seconds"
 		  " (default: " XSTRINGIFY (DEFAULT_CONNECT_TIMEOUT) ")" },
@@ -1974,6 +1976,7 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv)
 		"{ ADDRESS [/MASK] }...", "Experimental network scanner.");
 
 	int c;
+	bool need_no_args = false;
 	while ((c = opt_handler_get (&oh)) != -1)
 	switch (c)
 	{
@@ -1994,6 +1997,10 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv)
 	case 's':
 		if (!list_foreach (optarg, (list_foreach_fn) add_service, ctx))
 			exit (EXIT_FAILURE);
+		break;
+	case 'l':
+		ctx->list_services = true;
+		need_no_args = true;
 		break;
 	case 't':
 		if (!xstrtoul (&ul, optarg, 10) || !ul)
@@ -2027,7 +2034,7 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv)
 	argc -= optind;
 	argv += optind;
 
-	if (!argc)
+	if (!need_no_args && !argc)
 	{
 		opt_handler_usage (&oh, stderr);
 		exit (EXIT_FAILURE);
@@ -2038,6 +2045,33 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv)
 			exit (EXIT_FAILURE);
 
 	opt_handler_free (&oh);
+}
+
+static void
+list_services (struct app_context *ctx)
+{
+	struct node *root = node_new (strdup ("Known services"));
+	struct node *s, **s_tail = &root->children;
+	root->bold = true;
+
+	struct str_map_iter iter;
+	str_map_iter_init (&iter, &ctx->services);
+	struct service *service;
+	while ((service = str_map_iter_next (&iter)))
+	{
+		struct str line;
+		str_init (&line);
+		str_append (&line, service->name);
+		if (service->flags & SERVICE_SUPPORTS_TLS)
+			str_append (&line, " (supports TLS)");
+
+		*s_tail = s = node_new (str_steal (&line));
+		s_tail = &s->next;
+	}
+
+	node_print_tree (root);
+	node_delete (root);
+	putchar ('\n');
 }
 
 int
@@ -2085,6 +2119,12 @@ main (int argc, char *argv[])
 
 	if (!load_plugins (&ctx))
 		exit (EXIT_FAILURE);
+
+	if (ctx.list_services)
+	{
+		list_services (&ctx);
+		exit (EXIT_SUCCESS);
+	}
 
 	// TODO: make the order unimportant; this hopes all services support
 	//   the plain transport and that it is the first on the list
