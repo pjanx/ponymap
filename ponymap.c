@@ -75,7 +75,7 @@ init_terminal (void)
 
 	// Make sure all terminal features used by us are supported
 	if (!set_a_foreground || !orig_pair
-	 || !enter_standout_mode || !exit_standout_mode
+	 || !enter_bold_mode || !exit_attribute_mode
 	 || !carriage_return || !cursor_left || !clr_eol)
 	{
 		del_curterm (cur_term);
@@ -141,12 +141,12 @@ print_bold (FILE *stream, const char *s)
 	terminal_printer_fn printer = get_terminal_printer (stream);
 
 	if (printer)
-		tputs (enter_standout_mode, 1, printer);
+		tputs (enter_bold_mode, 1, printer);
 
 	fputs (s, stream);
 
 	if (printer)
-		tputs (exit_standout_mode, 1, printer);
+		tputs (exit_attribute_mode, 1, printer);
 }
 
 // --- Application data --------------------------------------------------------
