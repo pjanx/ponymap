@@ -413,9 +413,6 @@ app_context_free (struct app_context *self)
 
 // --- Progress indicator ------------------------------------------------------
 
-// TODO: make it so that the indicator is hidden while printing messages to
-//   the same terminal -> wrapper for log_message_stdio().
-
 static void
 indicator_set_timer (struct indicator *self)
 {
@@ -1749,6 +1746,26 @@ setup_signal_handlers (void)
 		exit_fatal ("sigaction: %s", strerror (errno));
 }
 
+// --- Logging -----------------------------------------------------------------
+
+// The indicator can get in the way of printing information messages
+
+static struct app_context *g_ctx;       ///< Application context
+
+static void
+log_message_wrapper (void *user_data, const char *quote, const char *fmt,
+	va_list ap)
+{
+	bool hide_indicator = g_ctx->indicator.shown;
+	if (hide_indicator)
+		indicator_hide (&g_ctx->indicator);
+
+	log_message_stdio (user_data, quote, fmt, ap);
+
+	if (hide_indicator)
+		indicator_show (&g_ctx->indicator);
+}
+
 // --- Main program ------------------------------------------------------------
 
 typedef bool (*list_foreach_fn) (void *, const char *);
@@ -2157,6 +2174,10 @@ main (int argc, char *argv[])
 
 	merge_port_ranges (&ctx);
 	merge_ip_ranges (&ctx);
+
+	// Wrap the logger so that it is synchronized with the indicator
+	g_ctx = &ctx;
+	g_log_message_real = log_message_wrapper;
 
 	// Initate the scan: generate as many units as possible
 	generator_init (&ctx);
