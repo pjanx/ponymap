@@ -29,6 +29,7 @@ pkg_check_modules (ncursesw ncursesw)
 if (ncursesw_FOUND)
 	set (project_libraries ${ncursesw_LIBRARIES})
 	include_directories (${ncursesw_INCLUDE_DIRS})
+	link_directories (${ncursesw_LIBRARY_DIRS})
 elseif (CURSES_FOUND)
 	set (project_libraries ${CURSES_LIBRARY})
 	include_directories (${CURSES_INCLUDE_DIR})
@@ -42,13 +43,21 @@ if (WITH_LUA)
 	pkg_search_module (lua REQUIRED lua5.3 lua-5.3 lua>=5.3)
 	list (APPEND project_libraries ${lua_LIBRARIES})
 	include_directories (${lua_INCLUDE_DIRS})
+	link_directories (${lua_LIBRARY_DIRS})
 endif (WITH_LUA)
+
+list (APPEND project_libraries ${libssl_LIBRARIES} ${jansson_LIBRARIES})
+include_directories (${libssl_INCLUDE_DIRS} ${jansson_INCLUDE_DIRS})
+link_directories (${libssl_LIBRARY_DIRS} ${jansson_LIBRARY_DIRS})
 
 # -lpthread is only there for debugging (gdb & errno)
 # -lrt is only for glibc < 2.17
-list (APPEND project_libraries
-	${libssl_LIBRARIES} ${jansson_LIBRARIES} rt dl pthread)
-include_directories (${libssl_INCLUDE_DIRS} ${jansson_INCLUDE_DIRS})
+foreach (extra iconv dl rt pthread)
+	find_library (extra_lib ${extra})
+	if (extra_lib)
+		list (APPEND project_libraries ${extra})
+	endif (extra_lib)
+endforeach (extra)
 
 # Project source files
 set (project_sources ${PROJECT_NAME}.c)
