@@ -58,11 +58,12 @@ link_directories (${libssl_LIBRARY_DIRS} ${jansson_LIBRARY_DIRS})
 
 # -lpthread is only there for debugging (gdb & errno)
 # -lrt is only for glibc < 2.17
+# -liconv may or may not be a part of libc
 foreach (extra iconv dl rt pthread)
-	find_library (extra_lib ${extra})
-	if (extra_lib)
+	find_library (extra_lib_${extra} ${extra})
+	if (extra_lib_${extra})
 		list (APPEND project_libraries ${extra})
-	endif (extra_lib)
+	endif (extra_lib_${extra})
 endforeach (extra)
 
 # Project source files
