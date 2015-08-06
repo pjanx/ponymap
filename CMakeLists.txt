@@ -19,6 +19,12 @@ set (project_VERSION "${project_VERSION_MAJOR}")
 set (project_VERSION "${project_VERSION}.${project_VERSION_MINOR}")
 set (project_VERSION "${project_VERSION}.${project_VERSION_PATCH}")
 
+if ("${CMAKE_SYSTEM_NAME}" MATCHES "BSD")
+	# Need this in FreeBSD and OpenBSD respectively;
+	# our POSIX version macros make it undefined
+	add_definitions (-D__BSD_VISIBLE=1 -D_BSD_SOURCE=1)
+endif ("${CMAKE_SYSTEM_NAME}" MATCHES "BSD")
+
 # Dependencies
 find_package (Curses)
 find_package (PkgConfig REQUIRED)

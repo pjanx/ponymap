@@ -1777,9 +1777,9 @@ list_foreach (const char *list, list_foreach_fn callback, void *user_data)
 	str_vector_init (&items);
 
 	bool success = false;
-	split_str_ignore_empty (list, ',', &items);
+	cstr_split_ignore_empty (list, ',', &items);
 	for (size_t i = 0; i < items.len; i++)
-		if (!callback (user_data, strip_str_in_place (items.vector[i], " ")))
+		if (!callback (user_data, cstr_strip_in_place (items.vector[i], " ")))
 			goto fail;
 
 	success = true;
