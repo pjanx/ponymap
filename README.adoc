@@ -1,7 +1,7 @@
 ponymap
 =======
 
-`ponymap' is an experimental network scanner, of alpha quality so far.
+'ponymap' is an experimental network scanner, of alpha quality so far.
 
 Replacing nmap is not the goal, even though it would be rather very nice to
 have a serious network scanner with a permissive license.
@@ -17,26 +17,26 @@ the maximum number of concurrent connections.
 
 Building and Running
 --------------------
-Build dependencies: CMake, pkg-config, help2man
+Build dependencies: CMake, pkg-config, help2man +
 Runtime dependenices: curses, openssl, Jansson, lua = 5.3 (optional)
 
- $ git clone https://github.com/pjanouch/ponymap.git
- $ git submodule init
- $ git submodule update
- $ mkdir build
- $ cd build
+ $ git clone --recursive https://github.com/pjanouch/ponymap.git
+ $ mkdir ponymap/build
+ $ cd ponymap/build
  $ cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Debug -DWITH_LUA=NO
  $ make
 
 To install the application, you can do either the usual:
+
  # make install
 
 Or you can try telling CMake to make a package for you.  For Debian it is:
+
  $ cpack -G DEB
  # dpkg -i ponymap-*.deb
 
-Note that for versions of CMake before 2.8.9, you need to prefix cpack with
-`fakeroot' or file ownership will end up wrong.
+Note that for versions of CMake before 2.8.9, you need to prefix `cpack` with
+`fakeroot` or file ownership will end up wrong.
 
 Having the program installed, simply run it with no arguments to retrieve
 a usage text.  Have fun scanning.
@@ -47,9 +47,15 @@ This was quite an interesting project to write and it has taught me a lot about
 event loops.  It would be relatively simple to plug in libuv if more robustness
 and portability is needed, though.
 
+Contributing and Support
+------------------------
+Use this project's GitHub to report any bugs, request features, or submit pull
+requests.  If you want to discuss this project, or maybe just hang out with
+the developer, feel free to join me at irc://anathema.irc.so, channel #anathema.
+
 License
 -------
-`ponymap' is written by Přemysl Janouch <p.janouch@gmail.com>.
+'ponymap' is written by Přemysl Janouch <p.janouch@gmail.com>.
 
 You may use the software under the terms of the ISC license, the text of which
 is included within the package, or, at your option, you may relicense the work
