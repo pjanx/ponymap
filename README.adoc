@@ -23,7 +23,7 @@ Runtime dependenices: curses, openssl, Jansson, lua = 5.3 (optional)
  $ git clone --recursive https://github.com/pjanouch/ponymap.git
  $ mkdir ponymap/build
  $ cd ponymap/build
- $ cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Debug -DWITH_LUA=NO
+ $ cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Debug
  $ make
 
 To install the application, you can do either the usual:

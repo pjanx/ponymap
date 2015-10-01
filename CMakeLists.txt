@@ -7,9 +7,6 @@ if ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUC)
 	set (CMAKE_C_FLAGS "-std=c99 -Wall -Wextra -Wno-unused-function")
 endif ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUC)
 
-# Build options
-option (WITH_LUA "Enable experimental support for Lua 5.3 plugins" ON)
-
 # Version
 set (project_VERSION_MAJOR "0")
 set (project_VERSION_MINOR "1")
@@ -43,10 +40,12 @@ else (CURSES_FOUND)
 	message (SEND_ERROR "Curses not found")
 endif (ncursesw_FOUND)
 
+# FIXME: for "lua" we also need to check that it is < 5.4
+#   which doesn't seem to be possible with FindPkgConfig
+pkg_search_module (lua REQUIRED lua5.3 lua-5.3 lua>=5.3)
+option (WITH_LUA "Enable experimental support for Lua 5.3 plugins" ${lua_FOUND})
+
 if (WITH_LUA)
-	# FIXME: for "lua" we also need to check that it is < 5.4
-	#   which doesn't seem to be possible with FindPkgConfig
-	pkg_search_module (lua REQUIRED lua5.3 lua-5.3 lua>=5.3)
 	list (APPEND project_libraries ${lua_LIBRARIES})
 	include_directories (${lua_INCLUDE_DIRS})
 	link_directories (${lua_LIBRARY_DIRS})
