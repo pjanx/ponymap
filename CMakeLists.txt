@@ -42,10 +42,14 @@ endif (ncursesw_FOUND)
 
 # FIXME: for "lua" we also need to check that it is < 5.4
 #   which doesn't seem to be possible with FindPkgConfig
-pkg_search_module (lua REQUIRED lua5.3 lua-5.3 lua>=5.3)
+pkg_search_module (lua lua5.3 lua-5.3 lua>=5.3)
 option (WITH_LUA "Enable experimental support for Lua 5.3 plugins" ${lua_FOUND})
 
 if (WITH_LUA)
+	if (NOT lua_FOUND)
+		message (FATAL_ERROR "Lua library not found")
+	endif (NOT lua_FOUND)
+
 	list (APPEND project_libraries ${lua_LIBRARIES})
 	include_directories (${lua_INCLUDE_DIRS})
 	link_directories (${lua_LIBRARY_DIRS})
