@@ -4,7 +4,8 @@ cmake_minimum_required (VERSION 2.8.5)
 # Moar warnings
 if ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUC)
 	# -Wunused-function is pretty annoying here, as everything is static
-	set (CMAKE_C_FLAGS "-std=c99 -Wall -Wextra -Wno-unused-function")
+	set (CMAKE_C_FLAGS
+		"${CMAKE_C_FLAGS} -std=c99 -Wall -Wextra -Wno-unused-function")
 endif ("${CMAKE_C_COMPILER_ID}" MATCHES "GNU" OR CMAKE_COMPILER_IS_GNUC)
 
 # Version
@@ -130,7 +131,7 @@ endforeach (page)
 add_custom_target (docs ALL DEPENDS ${project_MAN_PAGES})
 
 foreach (page ${project_MAN_PAGES})
-	string (REGEX MATCH "\\.([0-9])" manpage_suffix "${page}")
+	string (REGEX MATCH "\\.([0-9])$" manpage_suffix "${page}")
 	install (FILES "${page}"
 		DESTINATION "${CMAKE_INSTALL_MANDIR}/man${CMAKE_MATCH_1}")
 endforeach (page)

@@ -15,8 +15,17 @@ So far there are some problems with reliability, and some clever algorithm to
 avoid overloading the network is needed.  Until then, you can use ulimit to cap
 the maximum number of concurrent connections.
 
-Building and Running
---------------------
+Packages
+--------
+Regular releases are sporadic.  git master should be stable enough.  You can get
+a package with the latest development version from Archlinux's AUR, or from
+openSUSE Build Service for the rest of mainstream distributions.  Consult the
+list of repositories and their respective links at:
+
+https://build.opensuse.org/project/repositories/home:pjanouch:git
+
+Building and Usage
+------------------
 Build dependencies: CMake, pkg-config, help2man +
 Runtime dependenices: curses, openssl, Jansson, lua = 5.3 (optional)
 
