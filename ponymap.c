@@ -41,7 +41,7 @@
 #define DEFAULT_CONNECT_TIMEOUT  10
 #define DEFAULT_SCAN_TIMEOUT     10
 
-static struct config_item g_config_table[] =
+static struct simple_config_item g_config_table[] =
 {
 	{ "plugin_dir",      PLUGIN_DIR,        "Where to search for plugins"    },
 	{ NULL,              NULL,              NULL                             }
@@ -363,7 +363,7 @@ app_context_init (struct app_context *self)
 
 	str_map_init (&self->config);
 	self->config.free = free;
-	load_config_defaults (&self->config, g_config_table);
+	simple_config_load_defaults (&self->config, g_config_table);
 
 	self->connect_timeout = DEFAULT_CONNECT_TIMEOUT;
 	self->scan_timeout = DEFAULT_SCAN_TIMEOUT;
@@ -2040,7 +2040,7 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv)
 		ctx->json_filename = optarg;
 		break;
 	case 'w':
-		call_write_default_config (optarg, g_config_table);
+		call_simple_config_write_default (optarg, g_config_table);
 		exit (EXIT_SUCCESS);
 	default:
 		print_error ("wrong options");
@@ -2121,7 +2121,7 @@ main (int argc, char *argv[])
 	atexit (ERR_free_strings);
 
 	struct error *e = NULL;
-	if (!read_config_file (&ctx.config, &e))
+	if (!simple_config_update_from_file (&ctx.config, &e))
 	{
 		print_error ("error loading configuration: %s", e->message);
 		error_free (e);
