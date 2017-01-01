@@ -2115,10 +2115,15 @@ main (int argc, char *argv[])
 	init_terminal ();
 	atexit (free_terminal);
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L || LIBRESSL_VERSION_NUMBER
 	SSL_library_init ();
 	atexit (EVP_cleanup);
 	SSL_load_error_strings ();
 	atexit (ERR_free_strings);
+#else
+	// Cleanup is done automatically via atexit()
+	OPENSSL_init_ssl (0, NULL);
+#endif
 
 	struct error *e = NULL;
 	if (!simple_config_update_from_file (&ctx.config, &e))
