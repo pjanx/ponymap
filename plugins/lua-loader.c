@@ -363,9 +363,8 @@ static luaL_Reg xlua_library[] =
 static bool
 load_one_plugin (lua_State *L, const char *name, const char *path)
 {
-	int ret;
-	if (!(ret = luaL_loadfile (L, path))
-	 && !(ret = lua_pcall (L, 0, 0, 0)))
+	if (!luaL_loadfile (L, path)
+	 && !lua_pcall (L, 0, 0, 0))
 		return true;
 
 	print_error ("Lua: could not load `%s': %s", name, lua_tostring (L, -1));

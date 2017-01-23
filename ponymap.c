@@ -233,7 +233,7 @@ struct unit
 	struct poller_timer timeout_event;  ///< Timeout event
 	struct poller_fd fd_event;          ///< FD event
 
-	struct str_vector info;             ///< Info resulting from the scan
+	struct strv info;                   ///< Info resulting from the scan
 	bool scan_started;                  ///< Whether the scan has been started
 	bool stop_requested;                ///< Stopping requested by service
 	bool stopped;                       ///< Scan has been stopped
@@ -513,7 +513,7 @@ unit_unref (struct unit *self)
 
 	str_free (&self->read_buffer);
 	str_free (&self->write_buffer);
-	str_vector_free (&self->info);
+	strv_free (&self->info);
 
 	free (self);
 }
@@ -680,7 +680,7 @@ unit_new (struct target *target, int socket_fd, uint16_t port,
 
 	str_init (&u->read_buffer);
 	str_init (&u->write_buffer);
-	str_vector_init (&u->info);
+	strv_init (&u->info);
 
 	poller_timer_init (&u->timeout_event, &target->ctx->poller);
 	u->timeout_event.dispatcher = (poller_timer_fn) unit_stop;
@@ -826,7 +826,7 @@ plugin_api_unit_set_success (struct unit *u, bool success)
 static void
 plugin_api_unit_add_info (struct unit *u, const char *result)
 {
-	str_vector_add (&u->info, result);
+	strv_append (&u->info, result);
 }
 
 static void
@@ -943,7 +943,7 @@ transport_plain_on_readable (struct unit *u)
 
 	while (true)
 	{
-		str_ensure_space (buf, 512);
+		str_reserve (buf, 512);
 		n_read = recv (u->socket_fd, buf->str + buf->len,
 			buf->alloc - buf->len - 1 /* null byte */, 0);
 
@@ -1046,9 +1046,9 @@ transport_tls_add_certificate_info (struct unit *u, X509 *cert)
 	char *subject = X509_NAME_oneline (X509_get_subject_name (cert), NULL, 0);
 	char *issuer  = X509_NAME_oneline (X509_get_issuer_name  (cert), NULL, 0);
 
-	str_vector_add_owned (&u->info, xstrdup_printf ("%s: %s",
+	strv_append_owned (&u->info, xstrdup_printf ("%s: %s",
 		"certificate subject", subject));
-	str_vector_add_owned (&u->info, xstrdup_printf ("%s: %s",
+	strv_append_owned (&u->info, xstrdup_printf ("%s: %s",
 		"certificate issuer", issuer));
 
 	free (subject);
@@ -1083,7 +1083,7 @@ transport_tls_on_readable (struct unit *u)
 	data->ssl_rx_want_tx = false;
 	while (true)
 	{
-		str_ensure_space (buf, 4096);
+		str_reserve (buf, 4096);
 		int n_read = SSL_read (data->ssl, buf->str + buf->len,
 			buf->alloc - buf->len - 1 /* null byte */);
 
@@ -1773,18 +1773,18 @@ typedef bool (*list_foreach_fn) (void *, const char *);
 static bool
 list_foreach (const char *list, list_foreach_fn callback, void *user_data)
 {
-	struct str_vector items;
-	str_vector_init (&items);
+	struct strv items;
+	strv_init (&items);
 
 	bool success = false;
-	cstr_split_ignore_empty (list, ',', &items);
+	cstr_split (list, ",", true, &items);
 	for (size_t i = 0; i < items.len; i++)
 		if (!callback (user_data, cstr_strip_in_place (items.vector[i], " ")))
 			goto fail;
 
 	success = true;
 fail:
-	str_vector_free (&items);
+	strv_free (&items);
 	return success;
 }
 
@@ -1853,6 +1853,7 @@ add_target (struct app_context *ctx, const char *target)
 	char host[strlen (target) + 1];
 	strcpy (host, target);
 
+	// Parse as the CIDR notation when a slash is found
 	unsigned long mask = 32;
 	char *slash = strchr (host, '/');
 	if (slash)
