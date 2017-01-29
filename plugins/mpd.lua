@@ -27,9 +27,9 @@ end
 
 function MPD:on_data (data)
 	self.buf = self.buf .. data
-	local line = string.match (self.buf, "([^\n]*)\n")
+	local line = self.buf:match ("([^\n]*)\n")
 	if line then
-		local version = string.match (line, "OK MPD (.*)")
+		local version = line:match ("OK MPD (.*)")
 		if version then
 			self.unit:add_info ("version " .. version)
 			self.unit:set_success (true)
@@ -38,8 +38,8 @@ function MPD:on_data (data)
 	end
 end
 
-ponymap.register_service ({
+ponymap.register_service {
 	name = "MPD",
 	flags = 0,
 	new_scan = MPD.new
-})
+}
