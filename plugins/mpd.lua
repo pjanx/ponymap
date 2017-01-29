@@ -38,8 +38,4 @@ function MPD:on_data (data)
 	end
 end
 
-ponymap.register_service {
-	name = "MPD",
-	flags = 0,
-	new_scan = MPD.new
-}
+ponymap.register_service { name="MPD", flags=0, new_scan=MPD.new }

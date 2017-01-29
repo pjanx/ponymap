@@ -76,8 +76,4 @@ function NUT:on_data (data)
 	self.unit:stop ()
 end
 
-ponymap.register_service {
-	name = "NUT",
-	flags = 0,
-	new_scan = NUT.new
-}
+ponymap.register_service { name="NUT", flags=0, new_scan=NUT.new }
