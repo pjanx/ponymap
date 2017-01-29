@@ -4,6 +4,12 @@ notifications:
   channels: "irc.janouch.name#dev"
   use_notice: true
   skip_join: true
+  template:
+   - "%{repository_name}#%{build_number} on %{branch}: %{message}"
+   - "  %{compare_url}"
+   - "  %{build_url}"
+  on_success: change
+  on_failure: always
 env:
  global:
   - secure: "HwvulqH0sB/PJVWzv/N3C8SjbeoW0QDWY2WmdVOxj2pzLJY/KtyWCktHRmXxGLcua99dA3wuwWpo5zMj+exw5pqnhgatnpinMR0DZ1+1hrEqPTbRwm+iy+QLsk1kUzksbijewmCYOggXoWu6ltvU9aEFjsSInuWap0MlFbBidGE="
