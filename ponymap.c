@@ -894,20 +894,9 @@ load_plugins (struct app_context *ctx)
 	}
 
 	bool success = false;
-	struct dirent buf, *iter;
-	while (true)
+	struct dirent *iter;
+	while ((errno = 0, iter = readdir (dir)))
 	{
-		if (readdir_r (dir, &buf, &iter))
-		{
-			print_fatal ("%s: %s", "readdir_r", strerror (errno));
-			break;
-		}
-		if (!iter)
-		{
-			success = true;
-			break;
-		}
-
 		char *dot = strrchr (iter->d_name, '.');
 		if (!dot || strcmp (dot, ".so"))
 			continue;
@@ -916,6 +905,11 @@ load_plugins (struct app_context *ctx)
 		(void) load_one_plugin (ctx, iter->d_name, path);
 		free (path);
 	}
+	if (errno)
+		print_fatal ("%s: %s", "readdir", strerror (errno));
+	else
+		success = true;
+
 	closedir (dir);
 	return success;
 }
