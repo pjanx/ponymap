@@ -51,7 +51,7 @@ struct scan_data
 static void
 on_header_read (struct scan_data *scan)
 {
-	if (!strcasecmp (scan->field.str, "Server"))
+	if (!strcasecmp_ascii (scan->field.str, "Server"))
 	{
 		char *info = xstrdup_printf ("%s: %s",
 			"server software", scan->value.str);
@@ -88,6 +88,9 @@ static int
 on_headers_complete (http_parser *parser)
 {
 	struct scan_data *scan = parser->data;
+	if (scan->state == STATE_VALUE)
+		on_header_read (scan);
+
 	// We've got this far, this must be an HTTP server
 	g_data.api->unit_set_success (scan->u, true);
 	g_data.api->unit_stop (scan->u);
