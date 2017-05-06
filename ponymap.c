@@ -538,6 +538,7 @@ unit_stop (struct unit *u)
 
 	// This way we avoid a syscall with epoll
 	xclose (u->socket_fd);
+	// We don't fork any child processes, so we're sure
 	u->fd_event.closed = true;
 	poller_fd_reset (&u->fd_event);
 
