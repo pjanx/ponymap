@@ -38,8 +38,11 @@
 
 // --- Configuration (application-specific) ------------------------------------
 
-#define DEFAULT_CONNECT_TIMEOUT  10
-#define DEFAULT_SCAN_TIMEOUT     10
+enum
+{
+	DEFAULT_CONNECT_TIMEOUT = 10,
+	DEFAULT_SCAN_TIMEOUT    = 10
+};
 
 static struct simple_config_item g_config_table[] =
 {
@@ -245,13 +248,6 @@ static void unit_unref (struct unit *self);
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-enum transport_io_result
-{
-	TRANSPORT_IO_OK = 0,                ///< Completed successfully
-	TRANSPORT_IO_EOF,                   ///< Connection shut down by peer
-	TRANSPORT_IO_ERROR                  ///< Connection error
-};
-
 // The only real purpose of this is to abstract away TLS/SSL
 struct transport
 {
@@ -266,10 +262,10 @@ struct transport
 
 	/// The underlying socket may have become readable, update `read_buffer';
 	/// return false if the connection has failed.
-	enum transport_io_result (*on_readable) (struct unit *u);
+	enum socket_io_result (*on_readable) (struct unit *u);
 	/// The underlying socket may have become writeable, flush `write_buffer';
 	/// return false if the connection has failed.
-	enum transport_io_result (*on_writeable) (struct unit *u);
+	enum socket_io_result (*on_writeable) (struct unit *u);
 	/// Return event mask to use in the poller
 	int (*get_poll_events) (struct unit *u);
 };
@@ -391,19 +387,10 @@ app_context_free (struct app_context *self)
 	indicator_free (&self->indicator);
 	poller_free (&self->poller);
 
-	for (struct ip_range *iter = self->ip_list; iter; )
-	{
-		struct ip_range *next = iter->next;
+	LIST_FOR_EACH (struct ip_range, iter, self->ip_list)
 		ip_range_delete (iter);
-		iter = next;
-	}
-
-	for (struct port_range *iter = self->port_list; iter; )
-	{
-		struct port_range *next = iter->next;
+	LIST_FOR_EACH (struct port_range, iter, self->port_list)
 		port_range_delete (iter);
-		iter = next;
-	}
 
 	if (self->ssl_ctx)
 		SSL_CTX_free (self->ssl_ctx);
@@ -529,9 +516,10 @@ unit_stop (struct unit *u)
 	{
 		if (u->service->on_stopped)
 			u->service->on_stopped (u->service_data);
-
 		u->service->scan_free (u->service_data);
-		u->transport->cleanup (u);
+
+		if (u->transport->cleanup)
+			u->transport->cleanup (u);
 	}
 
 	poller_timer_reset (&u->timeout_event);
@@ -584,12 +572,12 @@ on_unit_ready (const struct pollfd *pfd, struct unit *u)
 {
 	struct service *service = u->service;
 	struct transport *transport = u->transport;
-	enum transport_io_result result;
+	enum socket_io_result result;
 	bool got_eof = false;
 
-	if ((result = transport->on_readable (u)) == TRANSPORT_IO_ERROR)
+	if ((result = transport->on_readable (u)) == SOCKET_IO_ERROR)
 		goto error;
-	got_eof |= result == TRANSPORT_IO_EOF;
+	got_eof |= result == SOCKET_IO_EOF;
 
 	if (u->read_buffer.len)
 	{
@@ -601,9 +589,9 @@ on_unit_ready (const struct pollfd *pfd, struct unit *u)
 			goto stop;
 	}
 
-	if ((result = transport->on_writeable (u)) == TRANSPORT_IO_ERROR)
+	if ((result = transport->on_writeable (u)) == SOCKET_IO_ERROR)
 		goto error;
-	got_eof |= result == TRANSPORT_IO_EOF;
+	got_eof |= result == SOCKET_IO_EOF;
 
 	if (got_eof)
 	{
@@ -627,7 +615,7 @@ stop:
 static void
 unit_start_scan (struct unit *u)
 {
-	if (!u->transport->init (u))
+	if (u->transport->init && !u->transport->init (u))
 	{
 		// TODO: maybe print a message with the problem?
 		unit_stop (u);
@@ -917,89 +905,37 @@ load_plugins (struct app_context *ctx)
 
 // --- Plain transport ---------------------------------------------------------
 
-static bool
-transport_plain_init (struct unit *u)
-{
-	(void) u;
-	return true;
-}
-
-static void
-transport_plain_cleanup (struct unit *u)
-{
-	(void) u;
-}
-
-static enum transport_io_result
+static enum socket_io_result
 transport_plain_on_readable (struct unit *u)
 {
-	struct str *buf = &u->read_buffer;
-	ssize_t n_read;
-
-	while (true)
-	{
-		str_reserve (buf, 512);
-		n_read = recv (u->socket_fd, buf->str + buf->len,
-			buf->alloc - buf->len - 1 /* null byte */, 0);
-
-		if (n_read > 0)
-		{
-			buf->str[buf->len += n_read] = '\0';
-			continue;
-		}
-		if (n_read == 0)
-			return TRANSPORT_IO_EOF;
-
-		if (errno == EAGAIN)
-			return TRANSPORT_IO_OK;
-		if (errno == EINTR)
-			continue;
-
+	enum socket_io_result result =
+		socket_io_try_read (u->socket_fd, &u->read_buffer);
+	if (result == SOCKET_IO_ERROR)
 		print_debug ("%s: %s: %s", __func__, "recv", strerror (errno));
-		return TRANSPORT_IO_ERROR;
-	}
+	return result;
 }
 
-static enum transport_io_result
+static enum socket_io_result
 transport_plain_on_writeable (struct unit *u)
 {
-	struct str *buf = &u->write_buffer;
-	ssize_t n_written;
-
-	while (buf->len)
-	{
-		n_written = send (u->socket_fd, buf->str, buf->len, 0);
-		if (n_written >= 0)
-		{
-			str_remove_slice (buf, 0, n_written);
-			continue;
-		}
-
-		if (errno == EAGAIN)
-			return TRANSPORT_IO_OK;
-		if (errno == EINTR)
-			continue;
-
+	enum socket_io_result result =
+		socket_io_try_write (u->socket_fd, &u->write_buffer);
+	if (result == SOCKET_IO_ERROR)
 		print_debug ("%s: %s: %s", __func__, "send", strerror (errno));
-		return TRANSPORT_IO_ERROR;
-	}
-	return TRANSPORT_IO_OK;
+	return result;
 }
 
 static int
 transport_plain_get_poll_events (struct unit *u)
 {
-	int events = POLLIN;
 	if (u->write_buffer.len)
-		events |= POLLOUT;
-	return events;
+		return POLLIN | POLLOUT;
+	return POLLIN;
 }
 
 static struct transport g_transport_plain =
 {
 	.name             = "plain",
-	.init             = transport_plain_init,
-	.cleanup          = transport_plain_cleanup,
 	.on_readable      = transport_plain_on_readable,
 	.on_writeable     = transport_plain_on_writeable,
 	.get_poll_events  = transport_plain_get_poll_events,
@@ -1067,12 +1003,12 @@ transport_tls_cleanup (struct unit *u)
 	free (data);
 }
 
-static enum transport_io_result
+static enum socket_io_result
 transport_tls_on_readable (struct unit *u)
 {
 	struct transport_tls_data *data = u->transport_data;
 	if (data->ssl_tx_want_rx)
-		return TRANSPORT_IO_OK;
+		return SOCKET_IO_OK;
 
 	struct str *buf = &u->read_buffer;
 	data->ssl_rx_want_tx = false;
@@ -1089,27 +1025,27 @@ transport_tls_on_readable (struct unit *u)
 			buf->str[buf->len += n_read] = '\0';
 			continue;
 		case SSL_ERROR_ZERO_RETURN:
-			return TRANSPORT_IO_EOF;
+			return SOCKET_IO_EOF;
 		case SSL_ERROR_WANT_READ:
-			return TRANSPORT_IO_OK;
+			return SOCKET_IO_OK;
 		case SSL_ERROR_WANT_WRITE:
 			data->ssl_rx_want_tx = true;
-			return TRANSPORT_IO_OK;
+			return SOCKET_IO_OK;
 		case XSSL_ERROR_TRY_AGAIN:
 			continue;
 		default:
 			print_debug ("%s: %s: %s", __func__, "SSL_read", error_info);
-			return TRANSPORT_IO_ERROR;
+			return SOCKET_IO_ERROR;
 		}
 	}
 }
 
-static enum transport_io_result
+static enum socket_io_result
 transport_tls_on_writeable (struct unit *u)
 {
 	struct transport_tls_data *data = u->transport_data;
 	if (data->ssl_rx_want_tx)
-		return TRANSPORT_IO_OK;
+		return SOCKET_IO_OK;
 
 	struct str *buf = &u->write_buffer;
 	data->ssl_tx_want_rx = false;
@@ -1124,20 +1060,20 @@ transport_tls_on_writeable (struct unit *u)
 			str_remove_slice (buf, 0, n_written);
 			continue;
 		case SSL_ERROR_ZERO_RETURN:
-			return TRANSPORT_IO_EOF;
+			return SOCKET_IO_EOF;
 		case SSL_ERROR_WANT_WRITE:
-			return TRANSPORT_IO_OK;
+			return SOCKET_IO_OK;
 		case SSL_ERROR_WANT_READ:
 			data->ssl_tx_want_rx = true;
-			return TRANSPORT_IO_OK;
+			return SOCKET_IO_OK;
 		case XSSL_ERROR_TRY_AGAIN:
 			continue;
 		default:
 			print_debug ("%s: %s: %s", __func__, "SSL_write", error_info);
-			return TRANSPORT_IO_ERROR;
+			return SOCKET_IO_ERROR;
 		}
 	}
-	return TRANSPORT_IO_OK;
+	return SOCKET_IO_OK;
 }
 
 static int
@@ -1206,12 +1142,8 @@ node_new (char *text)
 static void
 node_delete (struct node *self)
 {
-	struct node *iter, *next;
-	for (iter = self->children; iter; iter = next)
-	{
-		next = iter->next;
+	LIST_FOR_EACH (struct node, iter, self->children)
 		node_delete (iter);
-	}
 	free (self->text);
 	free (self);
 }
@@ -1230,19 +1162,7 @@ struct node_print_data
 	struct node_print_level **tail;     ///< Where to place further levels
 };
 
-static char *
-node_escape_text (const char *text)
-{
-	struct str filtered;
-	str_init (&filtered);
-
-	int c;
-	while ((c = *text++))
-		str_append_c (&filtered,
-			(isascii (c) && (isgraph (c) || c == ' ')) ? c : '.');
-
-	return str_steal (&filtered);
-}
+static int node_escape (int c) { return (c >= 32 && c < 127) ? c : '.'; }
 
 static void
 node_print_tree_level (struct node *self, struct node_print_data *data)
@@ -1260,7 +1180,8 @@ node_print_tree_level (struct node *self, struct node_print_data *data)
 	fputs (indent.str, stdout);
 	str_free (&indent);
 
-	char *escaped = node_escape_text (self->text);
+	char *escaped = xstrdup (self->text);
+	cstr_transform (escaped, node_escape);
 	if (self->bold)
 		print_bold (stdout, escaped);
 	else
