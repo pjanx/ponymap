@@ -102,8 +102,7 @@ scan_init (struct service *service, struct unit *u)
 {
 	(void) service;
 
-	struct str hello;
-	str_init (&hello);
+	struct str hello = str_make ();
 	str_append_printf (&hello, "GET / HTTP/1.0\r\n"
 		"Host: %s\r\n\r\n", g_data.api->unit_get_address (u));
 	g_data.api->unit_write (u, hello.str, hello.len);
@@ -114,8 +113,8 @@ scan_init (struct service *service, struct unit *u)
 	scan->parser.data = scan;
 
 	scan->state = STATE_FIELD;
-	str_init (&scan->field);
-	str_init (&scan->value);
+	scan->field = str_make ();
+	scan->value = str_make ();
 
 	scan->u = u;
 	return scan;

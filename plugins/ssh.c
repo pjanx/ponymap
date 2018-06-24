@@ -42,7 +42,7 @@ scan_init (struct service *service, struct unit *u)
 	(void) service;
 
 	struct scan_data *scan = xcalloc (1, sizeof *scan);
-	str_init (&scan->input);
+	scan->input = str_make ();
 	scan->u = u;
 	return scan;
 }

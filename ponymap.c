@@ -357,15 +357,14 @@ app_context_init (struct app_context *self)
 {
 	memset (self, 0, sizeof *self);
 
-	str_map_init (&self->config);
-	self->config.free = free;
+	self->config = str_map_make (free);
 	simple_config_load_defaults (&self->config, g_config_table);
 
 	self->connect_timeout = DEFAULT_CONNECT_TIMEOUT;
 	self->scan_timeout = DEFAULT_SCAN_TIMEOUT;
 
-	str_map_init (&self->svc_list);
-	str_map_init (&self->services);
+	self->svc_list = str_map_make (NULL);
+	self->services = str_map_make (NULL);
 	indicator_init (&self->indicator, &self->poller);
 	// Ignoring the generator so far
 
@@ -373,7 +372,7 @@ app_context_init (struct app_context *self)
 	self->quitting = false;
 	self->polling = false;
 
-	poller_idle_init (&self->step_event, &self->poller);
+	self->step_event = poller_idle_make (&self->poller);
 	self->step_event.dispatcher = (poller_idle_fn) on_generator_step_requested;
 	self->step_event.user_data = self;
 }
@@ -424,7 +423,7 @@ on_indicator_tick (struct indicator *self)
 static void
 indicator_init (struct indicator *self, struct poller *poller)
 {
-	poller_timer_init (&self->timer, poller);
+	self->timer = poller_timer_make (poller);
 	self->timer.dispatcher = (poller_timer_fn) on_indicator_tick;
 	self->timer.user_data = self;
 
@@ -667,15 +666,15 @@ unit_new (struct target *target, int socket_fd, uint16_t port,
 	u->service = service;
 	u->transport = transport;
 
-	str_init (&u->read_buffer);
-	str_init (&u->write_buffer);
-	strv_init (&u->info);
+	u->read_buffer = str_make ();
+	u->write_buffer = str_make ();
+	u->info = strv_make ();
 
-	poller_timer_init (&u->timeout_event, &target->ctx->poller);
+	u->timeout_event = poller_timer_make (&target->ctx->poller);
 	u->timeout_event.dispatcher = (poller_timer_fn) unit_stop;
 	u->timeout_event.user_data = u;
 
-	poller_fd_init (&u->fd_event, &target->ctx->poller, socket_fd);
+	u->fd_event = poller_fd_make (&target->ctx->poller, socket_fd);
 	u->fd_event.dispatcher = (poller_fd_fn) on_unit_connected;
 	u->fd_event.user_data = u;
 
@@ -1167,9 +1166,7 @@ static int node_escape (int c) { return (c >= 32 && c < 127) ? c : '.'; }
 static void
 node_print_tree_level (struct node *self, struct node_print_data *data)
 {
-	struct str indent;
-	str_init (&indent);
-
+	struct str indent = str_make ();
 	for (struct node_print_level *iter = data->head; iter; iter = iter->next)
 	{
 		bool started = iter->started;
@@ -1315,8 +1312,7 @@ target_dump_terminal (struct target *self, struct target_dump_data *data)
 {
 	indicator_hide (&self->ctx->indicator);
 
-	struct str tmp;
-	str_init (&tmp);
+	struct str tmp = str_make ();
 	str_append (&tmp, self->ip_string);
 	if (self->hostname)
 		str_append_printf (&tmp, " (%s)", self->hostname);
@@ -1527,7 +1523,7 @@ generator_init (struct app_context *ctx)
 	g->port_range_iter = ctx->port_list;
 	g->port_iter = g->port_range_iter->start;
 
-	str_map_iter_init (&g->svc_iter, &ctx->svc_list);
+	g->svc_iter = str_map_iter_make (&ctx->svc_list);
 	g->svc = str_map_iter_next (&g->svc_iter);
 
 	g->transport_iter = ctx->transports;
@@ -1569,7 +1565,7 @@ generator_step (struct app_context *ctx)
 	// Try to find the next service to scan for
 	if ((g->svc = str_map_iter_next (&g->svc_iter)))
 		return true;
-	str_map_iter_init (&g->svc_iter, &ctx->svc_list);
+	g->svc_iter = str_map_iter_make (&ctx->svc_list);
 	g->svc = str_map_iter_next (&g->svc_iter);
 
 	// Try to find the next port to scan
@@ -1689,8 +1685,7 @@ typedef bool (*list_foreach_fn) (void *, const char *);
 static bool
 list_foreach (const char *list, list_foreach_fn callback, void *user_data)
 {
-	struct strv items;
-	strv_init (&items);
+	struct strv items = strv_make ();
 
 	bool success = false;
 	cstr_split (list, ",", true, &items);
@@ -1850,8 +1845,7 @@ merge_ip_ranges (struct app_context *ctx)
 static bool
 resolve_service_names (struct app_context *ctx)
 {
-	struct str_map_iter iter;
-	str_map_iter_init (&iter, &ctx->svc_list);
+	struct str_map_iter iter = str_map_iter_make (&ctx->svc_list);
 	char *name = NULL;
 	bool success = true;
 	while (free (name), (name = str_map_iter_next (&iter)))
@@ -1905,8 +1899,7 @@ parse_program_arguments (struct app_context *ctx, int argc, char **argv)
 		{ 0, NULL, NULL, 0, NULL }
 	};
 
-	struct opt_handler oh;
-	opt_handler_init (&oh, argc, argv, opts,
+	struct opt_handler oh = opt_handler_make (argc, argv, opts,
 		"{ ADDRESS [/MASK] }...", "Experimental network scanner.");
 
 	int c;
@@ -1988,13 +1981,11 @@ list_services (struct app_context *ctx)
 	struct node *s, **s_tail = &root->children;
 	root->bold = true;
 
-	struct str_map_iter iter;
-	str_map_iter_init (&iter, &ctx->services);
+	struct str_map_iter iter = str_map_iter_make (&ctx->services);
 	struct service *service;
 	while ((service = str_map_iter_next (&iter)))
 	{
-		struct str line;
-		str_init (&line);
+		struct str line = str_make ();
 		str_append (&line, service->name);
 		if (service->flags & SERVICE_SUPPORTS_TLS)
 			str_append (&line, " (supports TLS)");
@@ -2050,8 +2041,8 @@ main (int argc, char *argv[])
 		exit (EXIT_FAILURE);
 	}
 
-	struct poller_fd signal_event;
-	poller_fd_init (&signal_event, &ctx.poller, g_signal_pipe[0]);
+	struct poller_fd signal_event =
+		poller_fd_make (&ctx.poller, g_signal_pipe[0]);
 	signal_event.dispatcher = (poller_fd_fn) on_signal_pipe_readable;
 	signal_event.user_data = &ctx;
 	poller_fd_set (&signal_event, POLLIN);
@@ -2080,8 +2071,7 @@ main (int argc, char *argv[])
 
 	if (!ctx.svc_list.len)
 	{
-		struct str_map_iter iter;
-		str_map_iter_init (&iter, &ctx.services);
+		struct str_map_iter iter = str_map_iter_make (&ctx.services);
 		struct service *service;
 		while ((service = str_map_iter_next (&iter)))
 			str_map_set (&ctx.svc_list, service->name, service);

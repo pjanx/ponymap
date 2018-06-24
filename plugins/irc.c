@@ -56,15 +56,14 @@ scan_init (struct service *service, struct unit *u)
 		nick[i] = 'a' + rand () % ('z' - 'a' + 1);
 	nick[i] = '\0';
 
-	struct str hello;
-	str_init (&hello);
+	struct str hello = str_make ();
 	str_append_printf (&hello,
 		"NICK %s\r\nUSER %s 8 * :%s\r\n", nick, nick, nick);
 	g_data.api->unit_write (u, hello.str, hello.len);
 	str_free (&hello);
 
 	struct scan_data *scan = xcalloc (1, sizeof *scan);
-	str_init (&scan->input);
+	scan->input = str_make ();
 	scan->u = u;
 	return scan;
 }
@@ -87,8 +86,7 @@ on_irc_message (const struct irc_message *msg, const char *raw, void *user_data)
 	if (!irc_strcmp (msg->command, "PING"))
 	{
 		// Without this we might be unable to finish registration
-		struct str pong;
-		str_init (&pong);
+		struct str pong = str_make ();
 		str_append_printf (&pong, "PONG :%s\r\n",
 			msg->params.len > 0 ? msg->params.vector[0] : "");
 		g_data.api->unit_write (scan->u, pong.str, pong.len);
