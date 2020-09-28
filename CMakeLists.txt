@@ -139,8 +139,8 @@ endforeach (page)
 # CPack
 set (CPACK_PACKAGE_DESCRIPTION_SUMMARY "Experimental network scanner")
 set (CPACK_PACKAGE_VERSION ${project_VERSION})
-set (CPACK_PACKAGE_VENDOR "Premysl Janouch")
-set (CPACK_PACKAGE_CONTACT "Přemysl Janouch <p@janouch.name>")
+set (CPACK_PACKAGE_VENDOR "Premysl Eric Janouch")
+set (CPACK_PACKAGE_CONTACT "Přemysl Eric Janouch <p@janouch.name>")
 set (CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/LICENSE")
 
 set (CPACK_GENERATOR "TGZ;ZIP")

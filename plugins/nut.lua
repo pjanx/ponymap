@@ -1,7 +1,7 @@
 --
 -- nut.lua: Network UPS Tools service detection plugin
 --
--- Copyright (c) 2017, Přemysl Janouch <p@janouch.name>
+-- Copyright (c) 2017, Přemysl Eric Janouch <p@janouch.name>
 --
 -- Permission to use, copy, modify, and/or distribute this software for any
 -- purpose with or without fee is hereby granted.

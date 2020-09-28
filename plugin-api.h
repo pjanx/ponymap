@@ -1,7 +1,7 @@
 /*
  * plugin-api.h: plugin API for ponymap
  *
- * Copyright (c) 2014, Přemysl Janouch <p@janouch.name>
+ * Copyright (c) 2014, Přemysl Eric Janouch <p@janouch.name>
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted.
