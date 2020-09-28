@@ -41,10 +41,10 @@ else (CURSES_FOUND)
 	message (SEND_ERROR "Curses not found")
 endif (ncursesw_FOUND)
 
-# FIXME: for "lua" we also need to check that it is < 5.4
+# FIXME: for "lua" we also need to check that it is < 5.5
 #   which doesn't seem to be possible with FindPkgConfig
-pkg_search_module (lua lua5.3 lua-5.3 lua>=5.3)
-option (WITH_LUA "Enable experimental support for Lua 5.3 plugins" ${lua_FOUND})
+pkg_search_module (lua lua5.3 lua-5.3 lua5.4 lua-5.4 lua>=5.3)
+option (WITH_LUA "Enable experimental support for Lua plugins" ${lua_FOUND})
 
 if (WITH_LUA)
 	if (NOT lua_FOUND)

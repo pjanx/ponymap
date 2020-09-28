@@ -23,7 +23,7 @@ a package with the latest development version from Archlinux's AUR.
 Building and Usage
 ------------------
 Build dependencies: CMake, pkg-config, help2man +
-Runtime dependenices: curses, openssl, Jansson, lua = 5.3 (optional)
+Runtime dependenices: curses, openssl, Jansson, lua >= 5.3 (optional)
 
  $ git clone --recursive https://git.janouch.name/p/ponymap.git
  $ mkdir ponymap/build
