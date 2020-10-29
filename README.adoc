@@ -22,7 +22,7 @@ a package with the latest development version from Archlinux's AUR.
 
 Building and Usage
 ------------------
-Build dependencies: CMake, pkg-config, help2man +
+Build dependencies: CMake >= 3.0, pkg-config, help2man +
 Runtime dependenices: curses, openssl, Jansson, lua >= 5.3 (optional)
 
  $ git clone --recursive https://git.janouch.name/p/ponymap.git
@@ -39,9 +39,6 @@ Or you can try telling CMake to make a package for you.  For Debian it is:
 
  $ cpack -G DEB
  # dpkg -i ponymap-*.deb
-
-Note that for versions of CMake before 2.8.9, you need to prefix `cpack` with
-`fakeroot` or file ownership will end up wrong.
 
 Having the program installed, simply run it with no arguments to retrieve
 a usage text.  Have fun scanning.

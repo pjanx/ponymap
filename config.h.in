@@ -1,8 +1,8 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-#define PROGRAM_NAME "${CMAKE_PROJECT_NAME}"
-#define PROGRAM_VERSION "${project_VERSION}"
+#define PROGRAM_NAME "${PROJECT_NAME}"
+#define PROGRAM_VERSION "${PROJECT_VERSION}"
 
 #cmakedefine WITH_LUA
 #define PLUGIN_DIR "${CMAKE_INSTALL_PREFIX}/${plugin_dir}"

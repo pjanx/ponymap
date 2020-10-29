@@ -470,8 +470,7 @@ indicator_set_status (struct indicator *self, char *status)
 	bool refresh = self->shown;
 	indicator_hide (self);
 
-	free (self->status);
-	self->status = status;
+	cstr_set (&self->status, status);
 
 	if (refresh)
 		indicator_show (self);
