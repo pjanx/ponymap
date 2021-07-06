@@ -2014,6 +2014,10 @@ main (int argc, char *argv[])
 	else
 	{
 		limit.rlim_cur = limit.rlim_max;
+
+		// But too much may be seriously detrimental to function
+		limit.rlim_cur = MIN (limit.rlim_cur, 1 << 16);
+
 		if (setrlimit (RLIMIT_NOFILE, &limit))
 			print_warning ("%s: %s", "setrlimit failed", strerror (errno));
 	}
