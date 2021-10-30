@@ -7,3 +7,5 @@
 /ponymap.files
 /ponymap.creator*
 /ponymap.includes
+/ponymap.cflags
+/ponymap.cxxflags
