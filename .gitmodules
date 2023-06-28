@@ -1,6 +1,6 @@
 [submodule "http-parser"]
 	path = http-parser
-	url = git://github.com/joyent/http-parser.git
+	url = https://github.com/nodejs/http-parser.git
 [submodule "liberty"]
 	path = liberty
 	url = https://git.janouch.name/p/liberty.git
