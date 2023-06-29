@@ -840,6 +840,7 @@ load_one_plugin (struct app_context *ctx, const char *name, const char *path)
 	void *table = dlopen (path, RTLD_LAZY | RTLD_LOCAL);
 	if (!table)
 	{
+		print_debug ("%s", path);
 		print_error ("could not load `%s': %s", name, dlerror ());
 		return false;
 	}
@@ -874,6 +875,7 @@ load_plugins (struct app_context *ctx)
 	DIR *dir = opendir (plugin_dir);
 	if (!dir)
 	{
+		print_debug ("%s", plugin_dir);
 		print_fatal ("%s: %s",
 			"cannot open plugin directory", strerror (errno));
 		return false;

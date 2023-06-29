@@ -70,6 +70,7 @@ set (project_headers ${PROJECT_BINARY_DIR}/config.h)
 # Generate a configuration file
 include (GNUInstallDirs)
 set (plugin_dir ${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME})
+set (full_plugin_dir ${CMAKE_INSTALL_FULL_LIBDIR}/${PROJECT_NAME})
 configure_file (${PROJECT_SOURCE_DIR}/config.h.in ${PROJECT_BINARY_DIR}/config.h)
 include_directories (${PROJECT_SOURCE_DIR} ${PROJECT_BINARY_DIR})
 

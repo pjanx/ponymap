@@ -5,6 +5,6 @@
 #define PROGRAM_VERSION "${PROJECT_VERSION}"
 
 #cmakedefine WITH_LUA
-#define PLUGIN_DIR "${CMAKE_INSTALL_PREFIX}/${plugin_dir}"
+#define PLUGIN_DIR "${full_plugin_dir}"
 
 #endif  // ! CONFIG_H
