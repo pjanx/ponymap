@@ -59,7 +59,7 @@ link_directories (${libssl_LIBRARY_DIRS} ${jansson_LIBRARY_DIRS})
 foreach (extra iconv dl rt)
 	find_library (extra_lib_${extra} ${extra})
 	if (extra_lib_${extra})
-		list (APPEND project_libraries ${extra})
+		list (APPEND project_libraries ${extra_lib_${extra}})
 	endif ()
 endforeach ()
 
